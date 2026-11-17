@@ -75,6 +75,7 @@
     "d3-dag": "^0.11.5",
     "d3-flextree": "^2.1.2",
     "diceware-word": "^1.0.0",
+    "blakejs": "^1.2.1",
     "file-loader": "^6.2.0",
     "intersects": "^2.7.2",
     "libsodium-wrappers": "^0.8",
