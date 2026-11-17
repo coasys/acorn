@@ -39,6 +39,13 @@ type UnsubscribeFunction = () => void
 
 export class Ad4mAppClient {
   private rpc: Ad4mRpc
+  /** realtime-info-signal/middleware.ts reads appWebsocket.client.socket and
+   *  sends only when it is OPEN. The shim has no Holochain socket, so expose
+   *  the same shape permanently CLOSED: the realtime send is skipped, never
+   *  attempted (realtime ships in C3). */
+  readonly client = {
+    socket: { readyState: 3 /* CLOSED */, OPEN: 1, CONNECTING: 0 },
+  }
   /** cellIdString -> mounted project */
   cells = new Map<string, CellState>()
   /** the conductor's shared agent key (all language cells use it); a
