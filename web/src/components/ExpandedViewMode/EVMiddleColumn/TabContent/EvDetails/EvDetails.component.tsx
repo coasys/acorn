@@ -196,7 +196,9 @@ const EvDetails: React.FC<EvDetailsProps> = ({
   let targetDate: moment.Moment // for Small
   let timeFieldLabel: string
   let durationEstimate: string
-  let onSetDate = async (fromDate: number, toDate: number) => {}
+  // the pickers report whether the value they submit differs from the one
+  // they opened with; only a real user edit declares the prop changed
+  let onSetDate = async (first: number, second?: number | boolean, third?: boolean) => {}
 
   if (outcome) {
     // Uncertain
@@ -214,7 +216,11 @@ const EvDetails: React.FC<EvDetailsProps> = ({
         outcome.scope.Uncertain.timeFrame.toDate
           ? moment.unix(outcome.scope.Uncertain.timeFrame.toDate)
           : null
-      onSetDate = async (fromDate: number, toDate: number) => {
+      onSetDate = async (
+        fromDate: number,
+        toDate: number,
+        changed?: boolean
+      ) => {
         let cleaned = cleanOutcome()
         let timeFrame = fromDate && toDate ? { fromDate, toDate } : null
         cleaned.scope = {
@@ -225,7 +231,11 @@ const EvDetails: React.FC<EvDetailsProps> = ({
             timeFrame,
           },
         }
-        await updateOutcome(cleaned, outcomeActionHash, ['timeFrame'])
+        await updateOutcome(
+          cleaned,
+          outcomeActionHash,
+          changed ? ['timeFrame'] : undefined
+        )
       }
     } else if (outcome.computedScope === ComputedScope.Small) {
       // Small
@@ -234,7 +244,7 @@ const EvDetails: React.FC<EvDetailsProps> = ({
         'Small' in outcome.scope && outcome.scope.Small.targetDate
           ? moment.unix(outcome.scope.Small.targetDate)
           : null
-      onSetDate = async (targetDate: number) => {
+      onSetDate = async (targetDate: number, changed?: boolean) => {
         let cleaned = cleanOutcome()
         cleaned.scope = {
           Small: {
@@ -244,7 +254,11 @@ const EvDetails: React.FC<EvDetailsProps> = ({
             targetDate,
           },
         }
-        await updateOutcome(cleaned, outcomeActionHash, ['targetDate'])
+        await updateOutcome(
+          cleaned,
+          outcomeActionHash,
+          changed ? ['targetDate'] : undefined
+        )
       }
     } else if (outcome.computedScope === ComputedScope.Big) {
       // Big
@@ -260,7 +274,14 @@ const EvDetails: React.FC<EvDetailsProps> = ({
   const onSelectNewTags = async (newSelectedTags: ActionHashB64[]) => {
     const newOutcome = cleanOutcome()
     newOutcome.tags = newSelectedTags
-    updateOutcome(newOutcome, outcomeActionHash, ['tags'])
+    const changed =
+      newSelectedTags.length !== selectedTags.length ||
+      newSelectedTags.some((hash) => !selectedTags.includes(hash))
+    updateOutcome(
+      newOutcome,
+      outcomeActionHash,
+      changed ? ['tags'] : undefined
+    )
   }
 
   /* 
@@ -334,7 +355,14 @@ const EvDetails: React.FC<EvDetailsProps> = ({
               // the current persisted value
               githubLink={outcomeGithubLink}
               onSubmit={async () => {
-                await updateOutcomeWithLatest(['githubLink'])
+                // the control only declares githubLink when the submitted
+                // text differs from the value it showed (an unchanged
+                // click-outside submit is not an edit)
+                const dirtyProps =
+                  githubInputLinkText !== outcomeGithubLink
+                    ? ['githubLink']
+                    : undefined
+                await updateOutcomeWithLatest(dirtyProps)
                 setIsEditingGithubLink(false)
               }}
               isEditing={isEditingGithubLink}

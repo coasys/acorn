@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import moment from 'moment'
 
 import PickerTemplate from '../PickerTemplate/PickerTemplate'
@@ -11,6 +11,8 @@ import 'react-dates/initialize'
 import './DatePicker.scss'
 
 function DatePicker({ date, onClose, onSet }) {
+  // the value the picker opened with: submitting it back is not an edit
+  const openedWith = useRef(date ? date.unix() : null)
   return (
     <PickerTemplate
       heading="Target Date"
@@ -35,7 +37,8 @@ function DatePicker({ date, onClose, onSet }) {
           id="date_picker_id"
           date={date} // momentPropTypes.momentObj or null,
           onDateChange={(newDate) => {
-            onSet(newDate ? newDate.unix() : null)
+            const next = newDate ? newDate.unix() : null
+            onSet(next, next !== openedWith.current)
           }}
         />
       </div>
@@ -51,11 +54,26 @@ function CustomDateRangePicker({ fromDate, toDate, onClose, onSet }) {
     toDate,
   })
   const [focusedInput, setFocusedInput] = useState(START_DATE)
+  // the range the picker opened with: submitting it back is not an edit,
+  // and mounting the picker is not a submit at all
+  const openedWith = useRef({
+    fromDate: fromDate ? fromDate.unix() : null,
+    toDate: toDate ? toDate.unix() : null,
+  })
+  const mounted = useRef(false)
 
   useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true
+      return
+    }
+    const from = dates.fromDate ? dates.fromDate.unix() : null
+    const to = dates.toDate ? dates.toDate.unix() : null
     onSet(
-      dates.fromDate ? dates.fromDate.unix() : null,
-      dates.toDate ? dates.toDate.unix() : null
+      from,
+      to,
+      from !== openedWith.current.fromDate ||
+        to !== openedWith.current.toDate
     )
   }, [dates])
 

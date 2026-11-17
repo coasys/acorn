@@ -157,7 +157,14 @@ const ConnectedExpandedViewMode: React.FC<ConnectedExpandedViewModeProps> = ({
       // we should let Map View handle the Escape key
       if (event.key === 'Escape') {
         const updateTo = localCleanOutcome()
-        await updateOutcome(updateTo, outcome.actionHash, ['githubLink'])
+        // the github editor declares its prop only when the text it holds
+        // differs from the value it showed (the control's own original);
+        // closing without an edit declares nothing
+        const dirtyProps =
+          githubInputLinkText !== outcome.githubLink
+            ? ['githubLink']
+            : undefined
+        await updateOutcome(updateTo, outcome.actionHash, dirtyProps)
 
         onClose()
       }
@@ -189,6 +196,13 @@ const ConnectedExpandedViewMode: React.FC<ConnectedExpandedViewModeProps> = ({
 
   const updateOutcomeTaskList = (taskList: Array<SmallTask>) => {
     const cleanedOutcome = cleanOutcome(outcome)
+    // the checklist declares taskList only when the submitted list differs
+    // from the one it shows
+    const dirtyProps =
+      JSON.stringify(taskList) !==
+      JSON.stringify((cleanedOutcome.scope as SmallScope).Small.taskList)
+        ? ['taskList']
+        : undefined
     return updateOutcome(
       {
         ...cleanedOutcome,
@@ -202,7 +216,7 @@ const ConnectedExpandedViewMode: React.FC<ConnectedExpandedViewModeProps> = ({
         },
       },
       outcome.actionHash,
-      ['taskList']
+      dirtyProps
     )
   }
 

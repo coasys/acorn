@@ -157,6 +157,8 @@ const EVRightColumn: React.FC<EvRightColumnProps> = ({
     },
   ]
   const onAchievementStatusSelect = (achievementStatus: AchievementStatus) => {
+    // re-picking the status the dropdown already shows is not an edit
+    if (achievementStatus === achievementStatusSelected) return
     const cleanedOutcome = cleanOutcome(outcome)
     return updateOutcome(
       {
@@ -184,6 +186,9 @@ const EVRightColumn: React.FC<EvRightColumnProps> = ({
     ? outcome.computedScope === ComputedScope.Uncertain
     : false
   const onScopeSwitchState = async (state: boolean) => {
+    // clicking the side the switch already shows is not an edit — and must
+    // not rewrite the stored scope with these defaults
+    if (state === computedScopeBoolean) return
     let scope: Scope
     if (state) {
       scope = defaultUncertainScope
@@ -209,7 +214,9 @@ const EVRightColumn: React.FC<EvRightColumnProps> = ({
     outcome && 'Uncertain' in outcome.scope
       ? outcome.scope.Uncertain.inBreakdown
       : false
-  const setInBreakdown = async (inBreakdown: boolean) => {
+  const setInBreakdown = async (newValue: boolean) => {
+    // setting the state the checkbox already shows is not an edit
+    if (newValue === inBreakdown) return
     const timeFrame =
       'Uncertain' in outcome.scope ? outcome.scope.Uncertain.timeFrame : null
     const smallsEstimate =
@@ -219,7 +226,9 @@ const EVRightColumn: React.FC<EvRightColumnProps> = ({
         ...outcome,
         editorAgentPubKey: activeAgentPubKey,
         timestampUpdated: moment().unix(),
-        scope: { Uncertain: { inBreakdown, timeFrame, smallsEstimate } },
+        scope: {
+          Uncertain: { inBreakdown: newValue, timeFrame, smallsEstimate },
+        },
       },
       outcomeActionHash,
       ['inBreakdown']

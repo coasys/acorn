@@ -239,9 +239,16 @@ export function toValues(
       } else if (scope.Uncertain != null) {
         put('scopeType', 'Uncertain')
         put('smallsEstimate', scope.Uncertain.smallsEstimate)
-        if (scope.Uncertain.timeFrame != null) {
-          put('timeFrame', JSON.stringify(scope.Uncertain.timeFrame))
-        }
+        // null is the mount's clear for a stored range: updateSubject
+        // merges it into the language's update params, the entry's
+        // timeFrame becomes null and its mount link is dropped — a
+        // declared clear must reach the call verbatim, not be omitted
+        put(
+          'timeFrame',
+          scope.Uncertain.timeFrame != null
+            ? JSON.stringify(scope.Uncertain.timeFrame)
+            : null
+        )
         put('inBreakdown', scope.Uncertain.inBreakdown)
       }
       if (Array.isArray(entry.tags)) {
