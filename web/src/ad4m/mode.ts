@@ -51,7 +51,12 @@ function decodedName(raw: string): string {
 }
 
 /** The `k=v` pieces of the URL fragment. App hash routes have no `=` and
- *  pass through as pieces that are never credential params. */
+ *  pass through as pieces that are never credential params.
+ *  Supported token syntax with the app's HashRouter: `#ad4mToken=...`
+ *  alone, or `#/route&ad4mToken=...` — the fragment is split on `&`, so
+ *  the route must be its own piece. `#/route?ad4mToken=...` is NOT
+ *  recognised: the piece's name is `route?ad4mToken`, the token is
+ *  neither read nor stripped. */
 function fragmentParts(): string[] {
   const raw = (window.location.hash || '').replace(/^#/, '')
   return raw.split('&').filter((kv) => kv !== '')
