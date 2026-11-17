@@ -22,7 +22,8 @@ module.exports = {
       'process.env.__DEV_MODE__': JSON.stringify(true),
       'process.env.KANGAROO': process.env.KANGAROO,
       'process.env.ACORN_AD4M_URL': JSON.stringify(process.env.ACORN_AD4M_URL),
-      'process.env.ACORN_AD4M_TOKEN': JSON.stringify(process.env.ACORN_AD4M_TOKEN),
+      // no ad4m token define: a token baked into the bundle is a credential
+      // in every public copy of dist/. Tokens only ever come from the page URL.
       'process.env.ACORN_LANGUAGE_ADDRESS': JSON.stringify(process.env.ACORN_LANGUAGE_ADDRESS),
     }),
     new HTMLWebpackPlugin({

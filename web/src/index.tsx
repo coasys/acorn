@@ -19,7 +19,12 @@ import {
   setWeaveClient,
   setWeaveProfilesClient,
 } from './hcWebsockets'
-import { isAd4mMode, ad4mUrl, ad4mToken } from './ad4m/mode'
+import {
+  isAd4mMode,
+  ad4mUrl,
+  ad4mToken,
+  stripCredentialParams,
+} from './ad4m/mode'
 import { Ad4mAppClient } from './ad4m/Ad4mAppClient'
 import { setAgentAddress } from './redux/persistent/profiles/agent-address/actions'
 import { setMyLocalProfile } from './redux/persistent/profiles/my-local-profile/actions'
@@ -41,7 +46,11 @@ const isWeaveDevMode = () => {
   }
   if (isAd4mMode()) {
     // AD4M mode: the shim satisfies the AppClient surface the UI uses
-    const client = await Ad4mAppClient.connect(ad4mUrl(), ad4mToken())
+    const executorUrl = ad4mUrl()
+    const token = ad4mToken()
+    // the token lives only in memory/storage now — take it off the address bar
+    stripCredentialParams()
+    const client = await Ad4mAppClient.connect(executorUrl, token)
     setAppWs(client as unknown as AppClient)
     const store = await createStoreAndRenderToDom(
       client as unknown as AppClient,
