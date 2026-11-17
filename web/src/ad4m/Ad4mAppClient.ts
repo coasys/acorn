@@ -19,7 +19,7 @@ import {
   decodeHashFromBase64,
   encodeHashToBase64,
 } from '@holochain/client'
-import { Ad4mRpc } from './rpc'
+import { Ad4mRpc, socketSurface } from './rpc'
 import { acornLanguageAddress } from './mode'
 import { dispatchZomeCall, CellCtx } from './zomeTable'
 import { startLive, LiveHandle } from './live'
@@ -42,13 +42,11 @@ type UnsubscribeFunction = () => void
 export class Ad4mAppClient {
   private rpc: Ad4mRpc
   /** realtime-info-signal/middleware.ts reads appWebsocket.client.socket and
-   *  sends only when it is OPEN. The shim has no Holochain socket, so expose
-   *  the same shape permanently CLOSED: the realtime send is skipped, never
-   *  attempted (C3's live updates arrive as signals, not over this socket;
-   *  presence in still has no channel — design §6.3). */
-  readonly client = {
-    socket: { readyState: 3 /* CLOSED */, OPEN: 1, CONNECTING: 0 },
-  }
+   *  sends only when it is OPEN. The shim exposes the same shape backed by
+   *  the real executor socket: while the transport is open, outbound
+   *  presence (editing / expanded-view / exit) goes out through
+   *  emit_realtime_info_signal; when it drops, the send is skipped. */
+  readonly client: { socket: ReturnType<typeof socketSurface> }
   /** cellIdString -> mounted project */
   cells = new Map<string, CellState>()
   /** cellIdString -> its live model subscriptions (C3) */
@@ -61,6 +59,7 @@ export class Ad4mAppClient {
 
   private constructor(rpc: Ad4mRpc) {
     this.rpc = rpc
+    this.client = { socket: socketSurface(rpc) }
     const savedAgent = localStorage.getItem(AGENT_STORAGE_KEY)
     this.agentPubKey = savedAgent
       ? decodeHashFromBase64(savedAgent)

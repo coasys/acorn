@@ -13,6 +13,23 @@
 type Pending = (msg: any) => void
 type Listener = (msg: any) => void
 
+/** The `client.socket` surface the realtime-info middleware gates on
+ *  (`readyState === OPEN`). Reported live from the real transport, so
+ *  outbound presence is sent while the executor socket is open and skipped
+ *  once it is not — instead of a permanently CLOSED stub that makes the
+ *  send path unreachable. */
+export function socketSurface(transport: { readyState: number }) {
+  return {
+    OPEN: 1,
+    CONNECTING: 0,
+    CLOSING: 2,
+    CLOSED: 3,
+    get readyState() {
+      return transport.readyState
+    },
+  }
+}
+
 export class Ad4mRpc {
   private ws: WebSocket
   private nextId = 1
@@ -21,6 +38,11 @@ export class Ad4mRpc {
 
   private constructor(ws: WebSocket) {
     this.ws = ws
+  }
+
+  /** the transport's readiness (WebSocket.readyState) */
+  get readyState(): number {
+    return this.ws.readyState
   }
 
   static connect(url: string, token?: string): Promise<Ad4mRpc> {
