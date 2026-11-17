@@ -14,10 +14,17 @@ import { WeaveClient, initializeHotReload, isWeaveContext } from '@theweave/api'
 import createStoreAndRenderToDom, { electronInit } from './indexForElectron'
 import {
   getAppWs,
+  setAgentPubKey,
   setAppWs,
   setWeaveClient,
   setWeaveProfilesClient,
 } from './hcWebsockets'
+import { isAd4mMode, ad4mUrl, ad4mToken } from './ad4m/mode'
+import { Ad4mAppClient } from './ad4m/Ad4mAppClient'
+import { setAgentAddress } from './redux/persistent/profiles/agent-address/actions'
+import { setMyLocalProfile } from './redux/persistent/profiles/my-local-profile/actions'
+import { readMyLocalProfile } from './utils'
+import { AppClient, encodeHashToBase64 } from '@holochain/client'
 import { getComponentAndPropsForRenderMode, mossInit } from './indexForMoss'
 import { appletServices } from './weave/appletService'
 import App from './routes/App.connector' // Import App for main view
@@ -31,6 +38,27 @@ const isWeaveDevMode = () => {
 ;(async () => {
   if (isWeaveDevMode()) {
     await initializeHotReload()
+  }
+  if (isAd4mMode()) {
+    // AD4M mode: the shim satisfies the AppClient surface the UI uses
+    const client = await Ad4mAppClient.connect(ad4mUrl(), ad4mToken())
+    setAppWs(client as unknown as AppClient)
+    const store = await createStoreAndRenderToDom(
+      client as unknown as AppClient,
+      App,
+      { appWebsocket: client }
+    )
+    // the real conductor agent key arrives with the first cell's info();
+    // until then appInfo reports a placeholder — refresh redux + the
+    // hcWebsockets cache when it lands
+    client.onAgentKey((key) => {
+      setAgentPubKey(key)
+      store.dispatch(setAgentAddress(encodeHashToBase64(key)))
+      const profile = readMyLocalProfile()
+      if (profile) store.dispatch(setMyLocalProfile(profile))
+    })
+    await electronInit(store, client as unknown as AppClient)
+    return
   }
   if (!isWeaveContext()) {
     // electron

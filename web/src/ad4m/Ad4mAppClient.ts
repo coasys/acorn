@@ -110,9 +110,22 @@ export class Ad4mAppClient {
   private learnAgentKey(info: any) {
     const b64 = info?.cellId?.[1] ?? info?.agentPubKey
     if (typeof b64 !== 'string' || !b64) return
-    if (encodeHashToBase64(this.agentPubKey) === b64) return
+    const prevB64 = encodeHashToBase64(this.agentPubKey)
+    if (prevB64 === b64) return
     this.agentPubKey = decodeHashFromBase64(b64)
     localStorage.setItem(AGENT_STORAGE_KEY, b64)
+    // A local profile stamped before the real key was known (first boot with
+    // zero cells) carries the placeholder key — restamp it. The project's
+    // AcornProfile entry is unaffected: the language overrides agentPubKey
+    // with the real own key at create time.
+    try {
+      const raw = localStorage.getItem('acorn-MY_PROFILE')
+      const profile = raw ? JSON.parse(raw) : null
+      if (profile && profile.agentPubKey === prevB64) {
+        profile.agentPubKey = b64
+        localStorage.setItem('acorn-MY_PROFILE', JSON.stringify(profile))
+      }
+    } catch {}
     for (const cb of this.agentKeyListeners) cb(this.agentPubKey)
   }
 

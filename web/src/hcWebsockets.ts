@@ -1,6 +1,7 @@
 import { AppWebsocket, AppClient, AgentPubKey } from '@holochain/client'
 import { isWeaveContext, WeaveClient } from '@theweave/api'
 import { ProfilesClient } from '@holochain-open-dev/profiles'
+import { isAd4mMode } from './ad4m/mode'
 
 let appWs: AppClient
 let agentPubKey: AgentPubKey
@@ -9,6 +10,11 @@ let weaveClient: WeaveClient
 
 export async function getAppWs(): Promise<AppClient> {
   if (appWs) return appWs
+  if (isAd4mMode()) {
+    // in AD4M mode index.tsx sets the shim before anything calls this;
+    // falling through here would open a real Holochain connection
+    throw new Error('AD4M mode: getAppWs() called before setAppWs()')
+  }
   if (isWeaveContext()) {
     const weClient = weaveClient || (await WeaveClient.connect())
     if (
