@@ -21,6 +21,9 @@ module.exports = {
       __APP_PORT__: process.env.APP_WS_PORT,
       'process.env.__DEV_MODE__': JSON.stringify(true),
       'process.env.KANGAROO': process.env.KANGAROO,
+      'process.env.ACORN_AD4M_URL': JSON.stringify(process.env.ACORN_AD4M_URL),
+      'process.env.ACORN_AD4M_TOKEN': JSON.stringify(process.env.ACORN_AD4M_TOKEN),
+      'process.env.ACORN_LANGUAGE_ADDRESS': JSON.stringify(process.env.ACORN_LANGUAGE_ADDRESS),
     }),
     new HTMLWebpackPlugin({
       template: './src/index.html', //source
