@@ -35,6 +35,15 @@ const isProjectExitAction = (action: { type: string }) => {
 }
 // watch for actions that will affect the realtime info state values
 
+/** What the AD4M shim exposes for local edit-baseline capture
+ *  (Ad4mAppClient.captureEditBaselines); absent on stock clients. */
+interface EditBaselineCapturer {
+  captureEditBaselines?: (
+    projectId: CellIdString | null | undefined,
+    realtimeInfo: any
+  ) => void
+}
+
 // return the action handler middleware
 const realtimeInfoWatcher =
   // closure the appWebsocket
@@ -45,6 +54,16 @@ const realtimeInfoWatcher =
         const appWebsocket = await getAppWs()
         const projectsZomeApi = new ProjectsZomeApi(appWebsocket)
         let result = next(action)
+        let state: RootState = store.getState()
+        const payload = getRealtimeInfo(state)
+        // AD4M mode: capture the edit-session baselines this action
+        // implies locally and synchronously — a transport that is not
+        // OPEN must not leave the next save diffing against the stale
+        // view-open snapshot. The send below still waits for OPEN.
+        ;(appWebsocket as EditBaselineCapturer).captureEditBaselines?.(
+          payload.projectId,
+          payload
+        )
         // client 0.21 widened AppWebsocket.client from the concrete WsClient to
         // the AppClientTransport interface (request + on only), so `.socket` is
         // no longer on the declared type. The runtime object is unchanged when
@@ -52,8 +71,6 @@ const realtimeInfoWatcher =
         // uses, so this restores the 0.6 typing without changing the expression.
         const wsClient = (appWebsocket as AppWebsocket).client as unknown as WsClient
         if (wsClient.socket.readyState === wsClient.socket.OPEN) {
-          let state: RootState = store.getState()
-          const payload = getRealtimeInfo(state)
           // there is a chance that the project has been exited
           // and thus this need not be fired
           if (payload.projectId) {
@@ -79,6 +96,12 @@ const realtimeInfoWatcher =
         }
         const cellIdString: CellIdString = action.payload
         const cellId = cellIdFromString(cellIdString)
+        // the emit this send produces drops every baseline of the cell;
+        // run the same cleanup locally so a dead socket cannot skip it
+        ;(appWebsocket as EditBaselineCapturer).captureEditBaselines?.(
+          cellIdString,
+          payload
+        )
         // TODO: catch and log error, but don't
         // await this call
         projectsZomeApi.realtimeInfoSignal.send(cellId, payload).catch((e) => {

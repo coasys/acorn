@@ -289,6 +289,34 @@ function deleteRow(className: string): Row {
   }
 }
 
+/** Sync the edit-session baselines a realtime-info payload implies:
+ *  `outcomeExpandedView` plus `outcomeBeingEdited`'s record are RECORD
+ *  sessions (their frozen baseline diffs every prop without a field
+ *  session); `outcomeBeingEdited.isTitle` also names a FIELD session on
+ *  `content` (false -> `description`), which captures its own original
+ *  when ITS edit starts — a live update the component accepted after the
+ *  view opened then becomes the field's new original instead of freezing
+ *  the view's older value. Local and synchronous: the middleware calls
+ *  this on the action itself so a dead transport cannot drop the capture
+ *  (Lal round 4, P2-2). */
+export function syncPresenceBaselines(uuid: string, payload: any) {
+  const wantedRecords = new Set<string>()
+  if (typeof payload?.outcomeExpandedView === 'string') {
+    wantedRecords.add(payload.outcomeExpandedView)
+  }
+  const wantedFields = new Set<string>()
+  const edit = payload?.outcomeBeingEdited
+  if (typeof edit?.outcomeActionHash === 'string') {
+    wantedRecords.add(edit.outcomeActionHash)
+    wantedFields.add(
+      `${edit.outcomeActionHash}:${
+        edit.isTitle === false ? 'description' : 'content'
+      }`
+    )
+  }
+  syncEditBaselines(uuid, 'AcornOutcome', wantedRecords, wantedFields)
+}
+
 const projectMetaRows = (ctx: ZomeCtx) =>
   modelQuery(ctx.call, ctx.cell.uuid, 'AcornProjectMeta')
 
@@ -584,33 +612,9 @@ export const zomeTable: Record<string, Row> = {
   // zome's emit_realtime_info_signal / init_signal (added in B5). The
   // RealtimeInfoInput IS the zome's payload, passed through verbatim.
   emit_realtime_info_signal: async (ctx, payload) => {
-    // The payload names the outcomes the user's edit sessions are open on.
-    // The expanded view's outcome is a RECORD session: its frozen baseline
-    // is the diff base for every prop without a field session. The focused
-    // title/description field is a FIELD session — isTitle names the prop —
-    // and captures its own original when ITS edit starts, so a live update
-    // the component accepted after the view opened becomes the field's new
-    // original instead of freezing the view's older value.
-    const wantedRecords = new Set<string>()
-    if (typeof payload?.outcomeExpandedView === 'string') {
-      wantedRecords.add(payload.outcomeExpandedView)
-    }
-    const wantedFields = new Set<string>()
-    const edit = payload?.outcomeBeingEdited
-    if (typeof edit?.outcomeActionHash === 'string') {
-      wantedRecords.add(edit.outcomeActionHash)
-      wantedFields.add(
-        `${edit.outcomeActionHash}:${
-          edit.isTitle === false ? 'description' : 'content'
-        }`
-      )
-    }
-    syncEditBaselines(
-      ctx.cell.uuid,
-      'AcornOutcome',
-      wantedRecords,
-      wantedFields
-    )
+    // The payload names the outcomes the user's edit sessions are open
+    // on; the baselines it implies are captured before the send goes out.
+    syncPresenceBaselines(ctx.cell.uuid, payload)
     await interact(
       ctx.call,
       `${ctx.cell.lang}://project`,

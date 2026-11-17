@@ -21,7 +21,11 @@ import {
 } from '@holochain/client'
 import { Ad4mRpc, socketSurface } from './rpc'
 import { acornLanguageAddress } from './mode'
-import { dispatchZomeCall, CellCtx } from './zomeTable'
+import {
+  dispatchZomeCall,
+  syncPresenceBaselines,
+  CellCtx,
+} from './zomeTable'
 import { startLive, LiveHandle } from './live'
 import { forgetCellBaselines } from './baselines'
 import { cellIdToString } from '../utils'
@@ -223,6 +227,23 @@ export class Ad4mAppClient {
       status: { type: 'enabled' },
       installed_at: Date.now() * 1000,
     }
+  }
+
+  /** The local half of emit_realtime_info_signal: capture the
+   *  edit-session baselines `realtimeInfo` names, synchronously and with
+   *  no RPC. The realtime-info middleware calls this on every
+   *  session-affecting action before its socket check, so a transport
+   *  that is not OPEN cannot drop the local edit state the next save
+   *  diffs against (Lal round 4, P2-2). `projectId` is the UI's
+   *  cellIdString — the exit signal's realtime payload carries none, so
+   *  that path passes the cell explicitly. */
+  captureEditBaselines(
+    projectId: string | null | undefined,
+    realtimeInfo: any
+  ) {
+    const cell = projectId ? this.cells.get(projectId) : undefined
+    if (!cell) return
+    syncPresenceBaselines(cell.uuid, realtimeInfo)
   }
 
   async callZome(request: CallZomeRequest): Promise<any> {
