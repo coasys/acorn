@@ -884,11 +884,19 @@ describe('update baselines vs. live delivery', () => {
         outcomeBeingEdited: null,
         outcomeExpandedView: actionHash,
       })
+    // focusing a field in the expanded view emits the field's own edit
+    // session: outcomeBeingEdited { outcomeActionHash, isTitle }
+    const focusField = (actionHash: string, isTitle: boolean) =>
+      dispatchZomeCall(call, liveCell, 'emit_realtime_info_signal', {
+        projectId: 'cell-id-string',
+        outcomeBeingEdited: { outcomeActionHash: actionHash, isTitle },
+        outcomeExpandedView: actionHash,
+      })
     const updateValues = () =>
       calls
         .filter((c) => c.method === 'perspective.updateSubject')
         .map((c) => JSON.parse(c.params.values))
-    return { calls, call, client, fireOutcome, openEditor, updateValues }
+    return { calls, call, client, fireOutcome, openEditor, focusField, updateValues }
   }
 
   test('a record the live stream moved is still editable: B back to A is sent', async () => {
@@ -936,5 +944,90 @@ describe('update baselines vs. live delivery', () => {
     // revert the peer's C; diffing against the remote C would do the same.
     // Only the edit-start baseline (B) leaves C alone.
     expect(world.updateValues()).toEqual([{ description: 'user desc' }])
+  })
+
+  // ---- field-scoped edit sessions (Lal review round 3: "expanded-view
+  //  baseline drops intentional reverts after live UI updates") --------------
+  //
+  // These run the real live path with the expanded view ALREADY open before
+  // the peer's update lands — the path the test above missed: the view's
+  // baseline freezes at open time, so the field's own session must carry
+  // the original the field's edit started from.
+  test('expanded view open, a live update, then focus + revert sends the reverted title', async () => {
+    const a = { ...outcomeInstance('oF1'), content: 'original A' }
+    const b = { ...a, content: 'peer moved to B' }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    // the expanded view opens on A; the live stream then moves the title to
+    // B and the component takes B into its editor state
+    await world.openEditor('oF1')
+    world.fireOutcome(1, [b])
+
+    // focusing the title starts the field's own edit session with B as the
+    // original; reverting it to A must send — a baseline frozen at A would
+    // see no change and leave B persisted
+    await world.focusField('oF1', true)
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oF1',
+      entry: outcomeEntry({ content: 'original A' }),
+    })
+    expect(world.updateValues()).toEqual([{ content: 'original A' }])
+  })
+
+  test('expanded view open, a live update, then focus + revert sends the reverted description', async () => {
+    const a = { ...outcomeInstance('oF2'), description: 'original A' }
+    const b = { ...a, description: 'peer moved to B' }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    await world.openEditor('oF2')
+    world.fireOutcome(1, [b])
+
+    await world.focusField('oF2', false)
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oF2',
+      entry: outcomeEntry({ description: 'original A' }),
+    })
+    expect(world.updateValues()).toEqual([{ description: 'original A' }])
+  })
+
+  test("one field editor's save does not push another editor's unchanged draft over a peer value", async () => {
+    const a = {
+      ...outcomeInstance('oF3'),
+      content: 'title0',
+      description: 'desc0',
+    }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    await world.openEditor('oF3')
+    // editor 2's own session is open on the description — desc0 is its
+    // original
+    await world.focusField('oF3', false)
+
+    // a peer moves the description while editor 2's draft still holds desc0
+    const b = { ...a, description: 'peer desc' }
+    world.fireOutcome(1, [b])
+
+    // editor 1 saves the title; editor 1's entry also carries editor 2's
+    // unchanged draft (the expanded view saves both editor fields)
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oF3',
+      entry: outcomeEntry({ content: 'user title', description: 'desc0' }),
+    })
+    expect(world.updateValues()).toEqual([{ content: 'user title' }])
+
+    // editor 2 then saves its unchanged draft: nothing must go out. A
+    // shared baseline rebased to editor 1's write result (which carries the
+    // peer's desc) would send the stale desc0 and overwrite the peer.
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oF3',
+      entry: outcomeEntry({ content: 'user title', description: 'desc0' }),
+    })
+    expect(world.updateValues().slice(1)).toEqual([])
   })
 })

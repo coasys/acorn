@@ -12,6 +12,7 @@ import { toEntry, toValues, toWireRecord, urlToHash, MapCtx } from './mapping'
 import {
   baselineEntry,
   editBaselineEntry,
+  fieldEditBaselineEntry,
   forgetBaseline,
   rebaseEditBaseline,
   rememberBaseline,
@@ -148,16 +149,17 @@ async function instanceById(
   throw new Error(`${className} ${id}: not in the mounted data`)
 }
 
-/** The keys of `values` that differ from `other` (a current instance or the
- *  baseline's mount values), so one UI save is one update call carrying only
- *  the props that moved. null and absent both read as "no value". */
+/** The keys of `values` that differ from the baseline `otherFor` names per
+ *  key (a current instance or a baseline's mount values), so one UI save is
+ *  one update call carrying only the props that moved. null and absent both
+ *  read as "no value". */
 function changedValues(
   values: Record<string, unknown>,
-  instance: Record<string, unknown>
+  otherFor: (prop: string) => Record<string, unknown> | undefined
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(values)) {
-    const cur = instance[k]
+    const cur = otherFor(k)?.[k]
     if (v == null && cur == null) continue
     if (
       v != null &&
@@ -192,39 +194,77 @@ function createRow(className: string, unwrap?: (p: any) => any): Row {
 /** hdk_crud `update_<type>` ({actionHash, entry}): one updateSubject carrying
  *  only the mount props the user's entry changed — one UI save is one
  *  `update` call into the language, not a full-entry rewrite. The diff runs
- *  against the baseline: while an edit session is open on the record, the
- *  frozen snapshot the user started editing (a peer's mid-edit move then
- *  stays out of the diff instead of being reverted); otherwise the latest
- *  remote state, which live deliveries keep current. Only a record this
- *  client never produced falls back to a fresh fetch. */
+ *  per prop against the baseline the prop's own editor froze: a FIELD edit
+ *  session's original when the prop's field is (or was just) under edit,
+ *  else the open record session's snapshot, else the latest remote state,
+ *  which live deliveries keep current (a peer's mid-edit move then stays
+ *  out of the diff instead of being reverted). Only a record this client
+ *  never produced falls back to a fresh fetch. */
 function updateRow(className: string): Row {
   return async (ctx, payload) => {
     const map = mapCtx(ctx.cell)
     const id = urlFor(ctx.cell, payload.actionHash)
-    const baseline =
-      editBaselineEntry(ctx.cell.uuid, className, payload.actionHash) ??
-      baselineEntry(ctx.cell.uuid, className, payload.actionHash)
-    const other = baseline
-      ? toValues(className, baseline, map)
-      : await instanceById(ctx, className, id)
+    const recordBase = editBaselineEntry(
+      ctx.cell.uuid,
+      className,
+      payload.actionHash
+    )
+    const remoteBase = baselineEntry(
+      ctx.cell.uuid,
+      className,
+      payload.actionHash
+    )
+    // fetched only when nothing tracks the record — a field baseline
+    // exists only where a remote baseline was captured, so it implies one
+    const fetched =
+      recordBase || remoteBase
+        ? null
+        : await instanceById(ctx, className, id)
+    const mountOf = (() => {
+      const cache = new Map<any, Record<string, unknown>>()
+      return (entry: any) => {
+        let v = cache.get(entry)
+        if (!v) {
+          v = toValues(className, entry, map)
+          cache.set(entry, v)
+        }
+        return v
+      }
+    })()
+    const otherFor = (prop: string) => {
+      const fieldBase = fieldEditBaselineEntry(
+        ctx.cell.uuid,
+        className,
+        payload.actionHash,
+        prop
+      )
+      if (fieldBase) return mountOf(fieldBase)
+      if (recordBase) return mountOf(recordBase)
+      if (remoteBase) return mountOf(remoteBase)
+      return fetched ?? undefined
+    }
     const values = changedValues(
       toValues(className, payload.entry, map),
-      other
+      otherFor
     )
-    await ctx.call(
-      'perspective.updateSubject',
-      {
-        uuid: ctx.cell.uuid,
-        subjectClass: className,
-        expressionAddress: id,
-        values: JSON.stringify(values),
-      },
-      120000
-    )
+    // a save that changed nothing sends nothing: an empty updateSubject
+    // would still commit a do-nothing action
+    if (Object.keys(values).length) {
+      await ctx.call(
+        'perspective.updateSubject',
+        {
+          uuid: ctx.cell.uuid,
+          subjectClass: className,
+          expressionAddress: id,
+          values: JSON.stringify(values),
+        },
+        120000
+      )
+    }
     const inst = await instanceById(ctx, className, id)
     const wire = toWireRecord(className, inst, map)
     rememberBaseline(ctx.cell.uuid, className, wire)
-    rebaseEditBaseline(ctx.cell.uuid, className, wire)
+    rebaseEditBaseline(ctx.cell.uuid, className, wire, Object.keys(values))
     return wire
   }
 }
@@ -398,22 +438,29 @@ export const zomeTable: Record<string, Row> = {
       : await instanceById(ctx, 'AcornProfile', id)
     const values = changedValues(
       toValues('AcornProfile', payload?.entry ?? payload, map),
-      other
+      () => other
     )
-    await ctx.call(
-      'perspective.updateSubject',
-      {
-        uuid: ctx.cell.uuid,
-        subjectClass: 'AcornProfile',
-        expressionAddress: id,
-        values: JSON.stringify(values),
-      },
-      120000
-    )
+    if (Object.keys(values).length) {
+      await ctx.call(
+        'perspective.updateSubject',
+        {
+          uuid: ctx.cell.uuid,
+          subjectClass: 'AcornProfile',
+          expressionAddress: id,
+          values: JSON.stringify(values),
+        },
+        120000
+      )
+    }
     const inst = await instanceById(ctx, 'AcornProfile', id)
     const wire = toWireRecord('AcornProfile', inst, map)
     rememberBaseline(ctx.cell.uuid, 'AcornProfile', wire)
-    rebaseEditBaseline(ctx.cell.uuid, 'AcornProfile', wire)
+    rebaseEditBaseline(
+      ctx.cell.uuid,
+      'AcornProfile',
+      wire,
+      Object.keys(values)
+    )
     return wire
   },
 
@@ -537,19 +584,33 @@ export const zomeTable: Record<string, Row> = {
   // zome's emit_realtime_info_signal / init_signal (added in B5). The
   // RealtimeInfoInput IS the zome's payload, passed through verbatim.
   emit_realtime_info_signal: async (ctx, payload) => {
-    // The payload names the outcomes the user's edit sessions are open on
-    // (the expanded view's outcome, and the focused title/description
-    // field's). Capture an immutable edit baseline for each newly opened
-    // session and drop the sessions that ended, so update_outcome diffs
-    // against the record as the user started editing it.
-    const wanted = new Set<string>()
+    // The payload names the outcomes the user's edit sessions are open on.
+    // The expanded view's outcome is a RECORD session: its frozen baseline
+    // is the diff base for every prop without a field session. The focused
+    // title/description field is a FIELD session — isTitle names the prop —
+    // and captures its own original when ITS edit starts, so a live update
+    // the component accepted after the view opened becomes the field's new
+    // original instead of freezing the view's older value.
+    const wantedRecords = new Set<string>()
     if (typeof payload?.outcomeExpandedView === 'string') {
-      wanted.add(payload.outcomeExpandedView)
+      wantedRecords.add(payload.outcomeExpandedView)
     }
-    if (typeof payload?.outcomeBeingEdited?.outcomeActionHash === 'string') {
-      wanted.add(payload.outcomeBeingEdited.outcomeActionHash)
+    const wantedFields = new Set<string>()
+    const edit = payload?.outcomeBeingEdited
+    if (typeof edit?.outcomeActionHash === 'string') {
+      wantedRecords.add(edit.outcomeActionHash)
+      wantedFields.add(
+        `${edit.outcomeActionHash}:${
+          edit.isTitle === false ? 'description' : 'content'
+        }`
+      )
     }
-    syncEditBaselines(ctx.cell.uuid, 'AcornOutcome', wanted)
+    syncEditBaselines(
+      ctx.cell.uuid,
+      'AcornOutcome',
+      wantedRecords,
+      wantedFields
+    )
     await interact(
       ctx.call,
       `${ctx.cell.lang}://project`,
