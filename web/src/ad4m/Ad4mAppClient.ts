@@ -22,6 +22,7 @@ import {
 import { Ad4mRpc } from './rpc'
 import { acornLanguageAddress } from './mode'
 import { dispatchZomeCall, CellCtx } from './zomeTable'
+import { startLive, LiveHandle } from './live'
 import { cellIdToString } from '../utils'
 import { MAIN_APP_ID, PROJECTS_ROLE_NAME } from '../holochainConfig'
 
@@ -42,12 +43,15 @@ export class Ad4mAppClient {
   /** realtime-info-signal/middleware.ts reads appWebsocket.client.socket and
    *  sends only when it is OPEN. The shim has no Holochain socket, so expose
    *  the same shape permanently CLOSED: the realtime send is skipped, never
-   *  attempted (realtime ships in C3). */
+   *  attempted (C3's live updates arrive as signals, not over this socket;
+   *  presence in still has no channel — design §6.3). */
   readonly client = {
     socket: { readyState: 3 /* CLOSED */, OPEN: 1, CONNECTING: 0 },
   }
   /** cellIdString -> mounted project */
   cells = new Map<string, CellState>()
+  /** cellIdString -> its live model subscriptions (C3) */
+  private live = new Map<string, LiveHandle>()
   /** the conductor's shared agent key (all language cells use it); a
    *  39-byte zero key until a cell's info() teaches us the real one */
   agentPubKey: Uint8Array
@@ -104,6 +108,7 @@ export class Ad4mAppClient {
       if (Array.isArray(mounts) && mounts.includes(row.lang)) {
         this.cells.set(row.cellIdString, row)
         this.learnAgentKey(row.info)
+        await this.startLiveFor(row.cellIdString, row)
       } else {
         changed = true
       }
@@ -134,6 +139,43 @@ export class Ad4mAppClient {
       }
     } catch {}
     for (const cb of this.agentKeyListeners) cb(this.agentPubKey)
+  }
+
+  /** Open the cell's live model subscriptions: every Acorn class's
+   *  modelSubscribe diffs into 'signal' emissions (design §6.3). A cell
+   *  removed while its subscriptions were still opening gets them closed
+   *  again at once. */
+  private async startLiveFor(cellIdString: string, cell: CellState) {
+    try {
+      const handle = await startLive(
+        {
+          call: (m, p, t) => this.rpc.call(m, p, t),
+          onEvent: (cb) => this.rpc.onEvent(cb),
+          emit: (s) => this.emitSignal(s),
+        },
+        {
+          ...cell,
+          cellId: [
+            decodeHashFromBase64(cell.info.cellId[0]),
+            decodeHashFromBase64(cell.info.cellId[1]),
+          ],
+        }
+      )
+      if (this.cells.has(cellIdString)) {
+        this.live.set(cellIdString, handle)
+      } else {
+        await handle.stop()
+      }
+    } catch (e) {
+      console.error('AD4M live: subscriptions failed for a cell', e)
+    }
+  }
+
+  /** End a cell's live subscriptions (its perspective must still exist). */
+  private async stopLiveFor(cellIdString: string) {
+    const handle = this.live.get(cellIdString)
+    this.live.delete(cellIdString)
+    if (handle) await handle.stop()
   }
 
   /** Fires once the real agent key is known (first cell seen). Used by
@@ -251,6 +293,9 @@ export class Ad4mAppClient {
     })
     this.learnAgentKey(info)
     this.persistCells()
+    // subscriptions open before the clone returns, so updates the project's
+    // first screens miss become signals too, not only later edits
+    await this.startLiveFor(cellIdString, this.cells.get(cellIdString)!)
 
     return {
       cell_id: cellId,
@@ -287,6 +332,7 @@ export class Ad4mAppClient {
     if (!found || foundKey === undefined) {
       throw new Error('AD4M mode: disableCloneCell on an unknown cell')
     }
+    await this.stopLiveFor(foundKey)
     await this.rpc.call('perspective.unmount', {
       uuid: found.uuid,
       languageAddress: found.lang,
