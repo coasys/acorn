@@ -279,6 +279,51 @@ function connInstance(id: string, parent: string, child: string, order = 0) {
   }
 }
 
+function memberInstance(id: string, outcome: string) {
+  return {
+    id: url(id),
+    __subjectClass: 'AcornOutcomeMember',
+    outcome: url(outcome),
+    member: agentToDid(AGENT_B64),
+    creator: agentToDid(AGENT_B64),
+    unixTimestamp: 1763370002,
+    isImported: false,
+    entryHash: 'e',
+    recordCreatedAt: 1,
+    recordUpdatedAt: 1,
+  }
+}
+
+function commentInstance(id: string, outcome: string) {
+  return {
+    id: url(id),
+    __subjectClass: 'AcornOutcomeComment',
+    outcome: url(outcome),
+    content: 'a comment',
+    creator: agentToDid(AGENT_B64),
+    unixTimestamp: 1763370003,
+    isImported: false,
+    entryHash: 'e',
+    recordCreatedAt: 1,
+    recordUpdatedAt: 1,
+  }
+}
+
+function entryPointInstance(id: string, outcome: string) {
+  return {
+    id: url(id),
+    __subjectClass: 'AcornEntryPoint',
+    outcome: url(outcome),
+    color: '#aabbcc',
+    creator: agentToDid(AGENT_B64),
+    createdAtTime: 1763370004,
+    isImported: false,
+    entryHash: 'e',
+    recordCreatedAt: 1,
+    recordUpdatedAt: 1,
+  }
+}
+
 const outcomeEntry = (over: any = {}) => ({
   content: 'Stock outcome',
   creatorAgentPubKey: AGENT_B64,
@@ -519,5 +564,60 @@ describe('zomeTable write rows', () => {
     expect(values.passphrase).toBeUndefined()
     expect(values.name).toBe('Fork Project')
     expect(res.actionHash).toBe('uhCkkTWV0YS')
+  })
+
+  test('delete_outcome_fully returns exactly what disappeared', async () => {
+    let deleted = false
+    const canned = () => ({
+      AcornOutcome: deleted
+        ? [outcomeInstance('o2')]
+        : [outcomeInstance('o1'), outcomeInstance('o2')],
+      AcornConnection: deleted
+        ? [connInstance('c2', 'o2', 'o3')]
+        : [connInstance('c1', 'o1', 'o2'), connInstance('c2', 'o2', 'o3')],
+      AcornOutcomeMember: deleted ? [] : [memberInstance('m1', 'o1')],
+      AcornOutcomeComment: deleted ? [] : [commentInstance('cm1', 'o1')],
+      AcornEntryPoint: deleted ? [] : [entryPointInstance('e1', 'o1')],
+    })
+    const { calls, call } = fakeWriteRpc({
+      canned,
+      onRemove: () => {
+        deleted = true
+      },
+    })
+    const res = await dispatchZomeCall(call, cell, 'delete_outcome_fully', {
+      input: 'o1',
+      local: true,
+    })
+    const removes = calls.filter(
+      (c) => c.method === 'perspective.removeSubject'
+    )
+    expect(removes).toHaveLength(1)
+    expect(removes[0].params).toMatchObject({
+      subjectClass: 'AcornOutcome',
+      expressionAddress: url('o1'),
+    })
+    expect(res).toEqual({
+      outcomeActionHash: 'o1',
+      deletedConnections: ['c1'],
+      deletedOutcomeMembers: ['m1'],
+      deletedOutcomeVotes: [],
+      deletedOutcomeComments: ['cm1'],
+      deletedEntryPoints: ['e1'],
+    })
+  })
+
+  test('delete_tag removes the subject and returns the hash', async () => {
+    const { calls, call } = fakeWriteRpc({ canned: () => ({}) })
+    const res = await dispatchZomeCall(call, cell, 'delete_tag', 'taghash1')
+    const removes = calls.filter(
+      (c) => c.method === 'perspective.removeSubject'
+    )
+    expect(removes).toHaveLength(1)
+    expect(removes[0].params).toMatchObject({
+      subjectClass: 'AcornTag',
+      expressionAddress: url('taghash1'),
+    })
+    expect(res).toBe('taghash1')
   })
 })

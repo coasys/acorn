@@ -203,6 +203,25 @@ function updateRow(className: string): Row {
   }
 }
 
+/** hdk_crud `delete_<type>` (payload is the bare actionHash; the
+ *  ZomeFnInput form is also accepted). Returns the hash, as the zome does. */
+function deleteRow(className: string): Row {
+  return async (ctx, payload) => {
+    const hash =
+      typeof payload === 'string' ? payload : payload?.input ?? payload
+    await ctx.call(
+      'perspective.removeSubject',
+      {
+        uuid: ctx.cell.uuid,
+        subjectClass: className,
+        expressionAddress: urlFor(ctx.cell, hash),
+      },
+      120000
+    )
+    return hash
+  }
+}
+
 const projectMetaRows = (ctx: ZomeCtx) =>
   modelQuery(ctx.call, ctx.cell.uuid, 'AcornProjectMeta')
 
@@ -336,6 +355,59 @@ export const zomeTable: Record<string, Row> = {
     )
     const inst = await instanceById(ctx, 'AcornProfile', id)
     return toWireRecord('AcornProfile', inst, map)
+  },
+
+  // --- deletes (hdk_crud `delete_<type>` — payload is the actionHash) ---
+  delete_outcome: deleteRow('AcornOutcome'),
+  delete_connection: deleteRow('AcornConnection'),
+  delete_entry_point: deleteRow('AcornEntryPoint'),
+  delete_outcome_comment: deleteRow('AcornOutcomeComment'),
+  delete_outcome_member: deleteRow('AcornOutcomeMember'),
+  delete_tag: deleteRow('AcornTag'),
+
+  // removeSubject AcornOutcome runs the language's delete, which is the
+  // zome's delete_outcome_fully: the outcome plus the connections, members,
+  // comments and entry points attached to it. The response is what the
+  // mount shows as gone between the pre- and post-delete queries (votes are
+  // not mounted, so they are always an empty list).
+  delete_outcome_fully: async (ctx, payload) => {
+    const hash =
+      typeof payload === 'string' ? payload : payload?.input ?? payload
+    const idOf = (r: any) => urlToHash(String(r?.id ?? ''), ctx.cell.lang)
+    const querySet = async (className: string) =>
+      new Set(
+        (await modelQuery(ctx.call, ctx.cell.uuid, className)).map(idOf)
+      )
+    const before = {
+      connections: await querySet('AcornConnection'),
+      members: await querySet('AcornOutcomeMember'),
+      comments: await querySet('AcornOutcomeComment'),
+      entryPoints: await querySet('AcornEntryPoint'),
+    }
+    await ctx.call(
+      'perspective.removeSubject',
+      {
+        uuid: ctx.cell.uuid,
+        subjectClass: 'AcornOutcome',
+        expressionAddress: urlFor(ctx.cell, hash),
+      },
+      300000
+    )
+    const gone = async (className: string, was: Set<string>) => {
+      const now = await querySet(className)
+      return [...was].filter((h) => !now.has(h))
+    }
+    return {
+      outcomeActionHash: hash,
+      deletedConnections: await gone('AcornConnection', before.connections),
+      deletedOutcomeMembers: await gone('AcornOutcomeMember', before.members),
+      deletedOutcomeVotes: [],
+      deletedOutcomeComments: await gone(
+        'AcornOutcomeComment',
+        before.comments
+      ),
+      deletedEntryPoints: await gone('AcornEntryPoint', before.entryPoints),
+    }
   },
 
   // `parent` on the outcome create is the mount's spelling of
