@@ -33,7 +33,7 @@ import _ from 'lodash'
 import { CellId } from '@holochain/client'
 import { MapCtx, toEntry, toWireRecord, urlToHash } from './mapping'
 import { CellCtx, RpcCall } from './zomeTable'
-import { rememberBaseline } from './baselines'
+import { forgetBaseline, rememberBaseline } from './baselines'
 
 export interface LiveCell extends CellCtx {
   /** the binary cell id the signal envelope carries */
@@ -183,6 +183,11 @@ function toIdMap(instances: any[]): Map<string, any> {
   return new Map(instances.map((i) => [String(i?.id), i]))
 }
 
+/** Frames held while a subscription is initializing or resyncing are
+ *  bounded: past this count the buffer is dropped and a fresh snapshot is
+ *  requested — it covers everything the dropped frames carried. */
+export const MAX_BUFFERED_FRAMES = 100
+
 interface ClassSub {
   className: string
   subscriptionId: string
@@ -222,7 +227,16 @@ export async function startLive(
    *  value back into the diff and drop — or revert — the real change). */
   const trackRemote = (className: string, change: InstanceChange) => {
     try {
-      if (change.action === 'delete') return
+      if (change.action === 'delete') {
+        // a record the remote deleted has no state to diff against —
+        // evict its baselines (remote and any open edit session)
+        forgetBaseline(
+          cell.uuid,
+          className,
+          hashOf(className, change.instance, cell.lang)
+        )
+        return
+      }
       rememberBaseline(
         cell.uuid,
         className,
@@ -273,7 +287,14 @@ export async function startLive(
     const sub = subs.get(msg.subscriptionId)
     if (!sub) return
     if (sub.initializing || sub.resyncing) {
-      // a snapshot is on its way; hold the frame until it lands
+      // a snapshot is on its way; hold the frame until it lands — but the
+      // buffer is bounded: on overflow drop it and resync fresh instead of
+      // retaining frames without end
+      if (sub.buffer.length >= MAX_BUFFERED_FRAMES) {
+        sub.buffer = []
+        sub.needResync = true
+        return
+      }
       sub.buffer.push(msg)
       return
     }

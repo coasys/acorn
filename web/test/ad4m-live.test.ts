@@ -10,7 +10,14 @@ import {
   LiveCell,
   LiveClient,
   LIVE_CLASSES,
+  MAX_BUFFERED_FRAMES,
 } from '../src/ad4m/live'
+import {
+  baselineEntry,
+  captureEditBaseline,
+  editBaselineEntry,
+  rememberBaseline,
+} from '../src/ad4m/baselines'
 import { agentToDid } from '../src/ad4m/agent'
 
 const LANG = 'acornlang'
@@ -509,5 +516,108 @@ describe('startLive init/resync buffering', () => {
     // a stale snapshot must not roll a1 back out: still exactly one signal
     expect(emitted).toHaveLength(1)
     expect(decodeSignal(emitted[0]).data.action).toBe('create')
+  })
+
+  it('a buffer overflow drops the held frames and asks for a fresh snapshot', async () => {
+    const a1 = outcomeInstance(OUTCOME_A)
+    const b = outcomeInstance(OUTCOME_B, 'final')
+    const { client, calls, emitted, fire, resolvers, deferred } =
+      deferredClient()
+    deferred.modelSubscribe = false
+    await startLive(client, cell)
+
+    const outcomeSub = calls.find(
+      (c) => c.params.class_name === 'AcornOutcome'
+    )!
+    // a revision gap opens a resync whose response we hold back
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 5,
+      ids: [],
+      upsert: [],
+    })
+    await tick()
+
+    // more frames than the buffer holds pile up while it is in flight
+    for (let i = 0; i < MAX_BUFFERED_FRAMES + 10; i++) {
+      fire({
+        type: 'query-subscription-update',
+        subscriptionId: outcomeSub.params.subscriptionId,
+        revision: 6 + i,
+        ids: [],
+        upsert: [],
+      })
+    }
+
+    // the in-flight snapshot lands; the overflow has queued another resync
+    const resyncKey = `resync:${outcomeSub.params.subscriptionId}`
+    resolvers.get(resyncKey)!({
+      revision: 100,
+      result: { instances: [a1], totalCount: 1 },
+    })
+    await tick()
+
+    const resyncCalls = calls.filter(
+      (c) => c.method === 'perspective.resyncSubscription'
+    )
+    expect(resyncCalls).toHaveLength(2)
+
+    // the second, fresh snapshot is what the UI converges to — the frames
+    // the buffer dropped are covered by it, not replayed
+    resolvers.get(resyncKey)!({
+      revision: 120,
+      result: { instances: [b], totalCount: 1 },
+    })
+    await tick()
+    const actions = emitted
+      .map(decodeSignal)
+      .map((d) => [
+        d.data.action,
+        d.data.action === 'delete' ? d.data.data : d.data.data.actionHash,
+      ])
+    expect(actions).toEqual([
+      ['create', OUTCOME_A],
+      ['create', OUTCOME_B],
+      ['delete', OUTCOME_A],
+    ])
+  })
+
+  it('a remote delete evicts the record baselines', async () => {
+    const doomed = outcomeInstance('delhash1')
+    const { client, calls, fire, deferred } = deferredClient()
+    deferred.modelSubscribe = false
+
+    // the record has a remote entry and an open edit session
+    rememberBaseline(UUID, 'AcornOutcome', {
+      actionHash: 'delhash1',
+      entry: { content: 'held' },
+    })
+    captureEditBaseline(UUID, 'AcornOutcome', 'delhash1')
+    expect(baselineEntry(UUID, 'AcornOutcome', 'delhash1')).toBeDefined()
+    expect(editBaselineEntry(UUID, 'AcornOutcome', 'delhash1')).toBeDefined()
+
+    await startLive(client, cell)
+    const outcomeSub = calls.find(
+      (c) => c.params.class_name === 'AcornOutcome'
+    )!
+    // the record arrives, then vanishes from the live result
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 1,
+      ids: [doomed.id],
+      upsert: [doomed],
+    })
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 2,
+      ids: [],
+      upsert: [],
+    })
+
+    expect(baselineEntry(UUID, 'AcornOutcome', 'delhash1')).toBeUndefined()
+    expect(editBaselineEntry(UUID, 'AcornOutcome', 'delhash1')).toBeUndefined()
   })
 })
