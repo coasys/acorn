@@ -27,14 +27,54 @@ export function ad4mUrl(): string {
 // 1. It is never baked into the bundle. There is no build-time token env —
 //    built output is public and a token inlined by DefinePlugin would be a
 //    credential sitting in every copy of dist/.
-// 2. It is only sent to the executor it was issued for. A token arrives in the
-//    `?ad4mToken=` query param (this fork's stand-in for ad4m-connect's
-//    capability request); we remember it bound to that executor's origin and
-//    reuse it for later visits to the same executor. A `?ad4m=` pointing at a
-//    different origin gets NO stored token — reaching another executor needs a
-//    fresh `?ad4mToken=` in the link (re-authorization).
+// 2. It is only sent to the executor it was issued for. A token arrives in
+//    the `#ad4mToken=` fragment (or, for compatibility, `?ad4mToken=` —
+//    this fork's stand-in for ad4m-connect's capability request); we
+//    remember it bound to that executor's origin and reuse it for later
+//    visits to the same executor. A `?ad4m=` pointing at a different
+//    origin gets NO stored token — reaching another executor needs a
+//    fresh `#ad4mToken=` in the link (re-authorization).
 
 const TOKEN_BINDINGS_KEY = 'acorn-ad4m-token-bindings'
+
+// Credential params are matched by DECODED name: `ad4m%54oken` decodes to
+// `ad4mToken`, and URLSearchParams would read it as the token — so it has
+// to go under either spelling.
+const CREDENTIAL_PARAMS = ['ad4mToken']
+
+function decodedName(raw: string): string {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
+/** The `k=v` pieces of the URL fragment. App hash routes have no `=` and
+ *  pass through as pieces that are never credential params. */
+function fragmentParts(): string[] {
+  const raw = (window.location.hash || '').replace(/^#/, '')
+  return raw.split('&').filter((kv) => kv !== '')
+}
+
+/** A token passed as `#ad4mToken=...` — the link form: a fragment is never
+ *  sent to the app server in a request URL or a Referer. The `?ad4mToken=`
+ *  query form still works for compatibility (and is stripped below). */
+function fragmentToken(): string | undefined {
+  for (const kv of fragmentParts()) {
+    const eq = kv.indexOf('=')
+    if (eq <= 0) continue
+    if (decodedName(kv.slice(0, eq)) === 'ad4mToken') {
+      const raw = kv.slice(eq + 1)
+      try {
+        return decodeURIComponent(raw)
+      } catch {
+        return raw
+      }
+    }
+  }
+  return undefined
+}
 
 /** The executor a token is bound to, normalized to scheme://host[:port]. */
 function executorOrigin(url: string): string {
@@ -57,7 +97,7 @@ function readBindings(): Record<string, string> {
 
 export function ad4mToken(): string | undefined {
   const url = urlParams().get('ad4m') || process.env.ACORN_AD4M_URL
-  const paramToken = urlParams().get('ad4mToken')
+  const paramToken = fragmentToken() ?? urlParams().get('ad4mToken')
   if (!url) return undefined
   const origin = executorOrigin(url)
   if (paramToken) {
@@ -72,24 +112,28 @@ export function ad4mToken(): string | undefined {
   return readBindings()[origin]
 }
 
-// Credential-bearing query params come off the address bar once they have
-// been read, so a copied/shared link never carries the capability token.
-const CREDENTIAL_PARAMS = ['ad4mToken']
-
+// Credential params come off the address bar once they have been read, so a
+// copied/shared link never carries the capability token — from the query
+// AND from the fragment, compared by decoded name.
 export function stripCredentialParams() {
   const parts = (window.location.search || '')
     .replace(/^\?/, '')
     .split('&')
     .filter((kv) => kv !== '')
-  // keep every non-credential param byte-for-byte; drop the credential ones
   const kept = parts.filter(
-    (kv) => !CREDENTIAL_PARAMS.includes(kv.split('=')[0])
+    (kv) => !CREDENTIAL_PARAMS.includes(decodedName(kv.split('=')[0]))
   )
-  if (kept.length === parts.length) return
+  const hashParts = fragmentParts()
+  const keptHash = hashParts.filter(
+    (kv) => !CREDENTIAL_PARAMS.includes(decodedName(kv.split('=')[0]))
+  )
+  if (kept.length === parts.length && keptHash.length === hashParts.length) {
+    return
+  }
   const url =
     (window.location.pathname || '/') +
     (kept.length ? `?${kept.join('&')}` : '') +
-    (window.location.hash || '')
+    (keptHash.length ? `#${keptHash.join('&')}` : '')
   window.history.replaceState(null, '', url)
 }
 

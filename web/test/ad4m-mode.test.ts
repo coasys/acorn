@@ -29,7 +29,10 @@ beforeEach(() => {
   g.window.history = {
     replaceState: jest.fn((_state: any, _title: any, url: string) => {
       const q = url.indexOf('?')
-      g.window.location.search = q >= 0 ? url.slice(q) : ''
+      const h = url.indexOf('#')
+      g.window.location.search =
+        q >= 0 ? url.slice(q, h >= 0 ? h : undefined) : ''
+      g.window.location.hash = h >= 0 ? url.slice(h) : ''
     }),
   }
   setLocation('')
@@ -114,9 +117,72 @@ describe('stripCredentialParams', () => {
     expect(ad4mToken()).toBe('tok-A')
   })
 
+  test('an encoded credential param is stripped by its decoded name', () => {
+    // `ad4m%54oken` decodes to `ad4mToken` — URLSearchParams reads it, so
+    // the strip must compare decoded names too
+    setLocation(`?ad4m=${EXEC_A}&ad4m%54oken=tok-enc&acornLanguage=lang1`)
+    ad4mToken()
+
+    stripCredentialParams()
+
+    const [, , url] = g.window.history.replaceState.mock.calls[0]
+    expect(url).not.toContain('tok-enc')
+    expect(url).not.toContain('ad4m%54oken')
+    expect(url).toContain(`ad4m=${EXEC_A}`)
+    expect(url).toContain('acornLanguage=lang1')
+  })
+
+  test('a token in the URL fragment is used, then cleared from the address bar', () => {
+    setLocation(`?ad4m=${EXEC_A}`)
+    g.window.location.hash = '#ad4mToken=tok-frag'
+
+    // read before the strip, and the binding sticks for later visits
+    expect(ad4mToken()).toBe('tok-frag')
+    stripCredentialParams()
+    expect(g.window.location.hash).not.toContain('tok-frag')
+    expect(ad4mToken()).toBe('tok-frag')
+  })
+
+  test('the fragment token leaves the rest of the fragment alone', () => {
+    setLocation(`?ad4m=${EXEC_A}`)
+    g.window.location.hash = '#ad4mToken=tok-frag&view=map'
+
+    ad4mToken()
+    stripCredentialParams()
+
+    expect(g.window.location.hash).not.toContain('tok-frag')
+    expect(g.window.location.hash).toContain('view=map')
+    // a plain route fragment without a token is untouched
+    g.window.location.hash = '#/some/route'
+    g.window.history.replaceState.mockClear()
+    stripCredentialParams()
+    expect(g.window.history.replaceState).not.toHaveBeenCalled()
+  })
+
+  test('the query form still works for compatibility', () => {
+    setLocation(`?ad4m=${EXEC_A}&ad4mToken=tok-compat`)
+    expect(ad4mToken()).toBe('tok-compat')
+    stripCredentialParams()
+    expect(g.window.location.search).not.toContain('tok-compat')
+  })
+
   test('nothing to strip leaves the URL untouched', () => {
     setLocation(`?ad4m=${EXEC_A}`)
     stripCredentialParams()
     expect(g.window.history.replaceState).not.toHaveBeenCalled()
+  })
+})
+
+describe('page template', () => {
+  test('the app HTML declares an early no-referrer policy', () => {
+    const html = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'index.html'),
+      'utf-8'
+    )
+    // the meta must precede anything that could issue a request
+    expect(html.indexOf('name="referrer"')).toBeLessThan(
+      html.indexOf('</head>')
+    )
+    expect(html).toContain('content="no-referrer"')
   })
 })
