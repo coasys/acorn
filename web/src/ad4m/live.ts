@@ -33,6 +33,7 @@ import _ from 'lodash'
 import { CellId } from '@holochain/client'
 import { MapCtx, toEntry, toWireRecord, urlToHash } from './mapping'
 import { CellCtx, RpcCall } from './zomeTable'
+import { rememberBaseline } from './baselines'
 
 export interface LiveCell extends CellCtx {
   /** the binary cell id the signal envelope carries */
@@ -215,6 +216,26 @@ export async function startLive(
   const subs = new Map<string, ClassSub>()
   let disposed = false
 
+  /** A delivered change IS the latest remote state: record it so an update's
+   *  changed-keys diff starts from what the user sees now, not what a fetch
+   *  happened to return earlier (the fetch-time baseline would read a stale
+   *  value back into the diff and drop — or revert — the real change). */
+  const trackRemote = (className: string, change: InstanceChange) => {
+    try {
+      if (change.action === 'delete') return
+      rememberBaseline(
+        cell.uuid,
+        className,
+        toWireRecord(className, change.instance, {
+          lang: cell.lang,
+          seed: cell.info?.seed,
+        })
+      )
+    } catch (e) {
+      console.error(`AD4M live: remote-state tracking failed`, e)
+    }
+  }
+
   const emitChange = (className: string, change: InstanceChange) => {
     try {
       const spec = SIGNALS[className]
@@ -228,11 +249,17 @@ export async function startLive(
     }
   }
 
+  /** Emit the signal for a change and move the remote-state cache with it. */
+  const deliver = (sub: ClassSub, change: InstanceChange) => {
+    emitChange(sub.className, change)
+    trackRemote(sub.className, change)
+  }
+
   /** Replace `sub.last` with `instances`, emitting the diff between them. */
   const replace = (sub: ClassSub, instances: any[]) => {
     const next = toIdMap(instances)
     for (const change of diffInstances([...sub.last.values()], [...next.values()])) {
-      emitChange(sub.className, change)
+      deliver(sub, change)
     }
     sub.last = next
   }
@@ -335,7 +362,7 @@ export async function startLive(
       next.set(id, inst)
     }
     for (const change of diffInstances([...sub.last.values()], [...next.values()])) {
-      emitChange(sub.className, change)
+      deliver(sub, change)
     }
     sub.last = next
     // Commit the revision only now that the delta applied. A delta that ends

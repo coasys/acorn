@@ -3,6 +3,7 @@
 // convert instances to WireRecords, and keep the zome's error semantics
 // ('no project meta exists') and the C2 boundary ('not implemented yet').
 import { dispatchZomeCall, CellCtx } from '../src/ad4m/zomeTable'
+import { startLive, LiveCell, LiveClient } from '../src/ad4m/live'
 import { agentToDid } from '../src/ad4m/agent'
 
 const LANG = 'acornlang'
@@ -794,5 +795,146 @@ describe('update baselines', () => {
       (c) => c.method === 'perspective.updateSubject'
     )
     expect(JSON.parse(updates[0].params.values)).toEqual({ description: 'd' })
+  })
+})
+
+// ---- update baselines vs. live delivery (Lal review round 2) ---------------
+//
+// The read cache is the latest REMOTE state: live deliveries move it. The
+// baseline an update diffs against is the record as the user started
+// editing it — captured when the edit session opens (the realtime-info emit
+// names the outcome in the expanded view / a focused field). Both are
+// driven here through real live frames, not a substituted fetch.
+describe('update baselines vs. live delivery', () => {
+  const LIVE_UUID = 'persp-uuid-live-edit'
+  const liveCell: LiveCell = {
+    ...cell,
+    uuid: LIVE_UUID,
+    cellId: [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])],
+  }
+
+  /** one rpc behind both the zome rows and the live subscription.
+   *  modelSubscribe/modelQuery serve `canned`; a fired frame is what moves
+   *  the mount state — update canned.current to match before firing. */
+  function liveEditWorld(initial: Record<string, any[]>) {
+    const calls: { method: string; params: any }[] = []
+    const listeners = new Set<(msg: any) => void>()
+    const emitted: any[] = []
+    const canned = { current: initial }
+    const call = jest.fn(async (method: string, params: any) => {
+      calls.push({ method, params })
+      if (method === 'perspective.modelSubscribe') {
+        return {
+          subscriptionId: params.subscriptionId,
+          result: {
+            instances: canned.current[params.class_name] ?? [],
+            totalCount: 0,
+          },
+          revision: 0,
+        }
+      }
+      if (method === 'perspective.modelQuery') {
+        const q = params.query_json ? JSON.parse(params.query_json) : {}
+        let rows = canned.current[params.class_name] ?? []
+        if (q?.where?.id) rows = rows.filter((r) => r.id === q.where.id)
+        return { instances: rows }
+      }
+      if (method === 'perspective.updateSubject') {
+        // the mount applies the values before the post-update read
+        const inst = (canned.current[params.subjectClass] ?? []).find(
+          (r) => r.id === params.expressionAddress
+        )
+        if (inst) Object.assign(inst, JSON.parse(params.values))
+        return true
+      }
+      if (method === 'perspective.resyncSubscription') {
+        return { revision: 0, result: { instances: [], totalCount: 0 } }
+      }
+      if (method === 'expression.interact') return null
+      throw new Error(`unexpected rpc ${method}`)
+    })
+    const client: LiveClient = {
+      call,
+      onEvent: (cb) => {
+        listeners.add(cb)
+        return () => listeners.delete(cb)
+      },
+      emit: (s) => emitted.push(s),
+    }
+    const fire = (msg: any) => listeners.forEach((cb) => cb(msg))
+    const outcomeSub = () =>
+      calls.find(
+        (c) =>
+          c.method === 'perspective.modelSubscribe' &&
+          c.params.class_name === 'AcornOutcome'
+      )!.params.subscriptionId
+    const fireOutcome = (revision: number, instances: any[]) => {
+      canned.current.AcornOutcome = instances
+      fire({
+        type: 'query-subscription-update',
+        subscriptionId: outcomeSub(),
+        revision,
+        ids: instances.map((i) => i.id),
+        upsert: instances,
+      })
+    }
+    const openEditor = (actionHash: string) =>
+      dispatchZomeCall(call, liveCell, 'emit_realtime_info_signal', {
+        projectId: 'cell-id-string',
+        outcomeBeingEdited: null,
+        outcomeExpandedView: actionHash,
+      })
+    const updateValues = () =>
+      calls
+        .filter((c) => c.method === 'perspective.updateSubject')
+        .map((c) => JSON.parse(c.params.values))
+    return { calls, call, client, fireOutcome, openEditor, updateValues }
+  }
+
+  test('a record the live stream moved is still editable: B back to A is sent', async () => {
+    const a = { ...outcomeInstance('oE1'), content: 'original A' }
+    const b = { ...a, content: 'peer moved to B' }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    // the live stream moves the record to B; the user opens the updated
+    // record and changes the title back to A
+    world.fireOutcome(1, [b])
+    await world.openEditor('oE1')
+
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oE1',
+      entry: outcomeEntry({ content: 'original A' }),
+    })
+    // a stale cached baseline (A) would see no change and drop the save
+    expect(world.updateValues()).toEqual([{ content: 'original A' }])
+  })
+
+  test('a field a peer moved during the edit is not reverted by an unrelated save', async () => {
+    const a = { ...outcomeInstance('oE2'), content: 'as fetched', description: '' }
+    const b = { ...a, content: 'peer value B' }
+    const c = { ...b, content: 'peer moved to C' }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    // the live stream moves the record to B; the editor opens holding B
+    world.fireOutcome(1, [b])
+    await world.openEditor('oE2')
+
+    // mid-edit a peer moves content on to C
+    world.fireOutcome(2, [c])
+
+    // the user saves an unrelated field; the saved entry still holds the B
+    // they saw for content
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oE2',
+      entry: outcomeEntry({ content: 'peer value B', description: 'user desc' }),
+    })
+    // diffing against the stale fetch baseline would resend content=B and
+    // revert the peer's C; diffing against the remote C would do the same.
+    // Only the edit-start baseline (B) leaves C alone.
+    expect(world.updateValues()).toEqual([{ description: 'user desc' }])
   })
 })

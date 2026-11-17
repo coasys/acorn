@@ -11,9 +11,12 @@
 import { toEntry, toValues, toWireRecord, urlToHash, MapCtx } from './mapping'
 import {
   baselineEntry,
+  editBaselineEntry,
   forgetBaseline,
+  rebaseEditBaseline,
   rememberBaseline,
   rememberBaselineEntry,
+  syncEditBaselines,
 } from './baselines'
 
 export type RpcCall = (
@@ -189,19 +192,18 @@ function createRow(className: string, unwrap?: (p: any) => any): Row {
 /** hdk_crud `update_<type>` ({actionHash, entry}): one updateSubject carrying
  *  only the mount props the user's entry changed — one UI save is one
  *  `update` call into the language, not a full-entry rewrite. The diff runs
- *  against the baseline: the entry as this client last produced it for the
- *  record (what the user started editing). A fresh fetch would read a peer's
- *  concurrent edit back into the diff and the user's stale value would
- *  overwrite it; only a record this client never produced falls back to it. */
+ *  against the baseline: while an edit session is open on the record, the
+ *  frozen snapshot the user started editing (a peer's mid-edit move then
+ *  stays out of the diff instead of being reverted); otherwise the latest
+ *  remote state, which live deliveries keep current. Only a record this
+ *  client never produced falls back to a fresh fetch. */
 function updateRow(className: string): Row {
   return async (ctx, payload) => {
     const map = mapCtx(ctx.cell)
     const id = urlFor(ctx.cell, payload.actionHash)
-    const baseline = baselineEntry(
-      ctx.cell.uuid,
-      className,
-      payload.actionHash
-    )
+    const baseline =
+      editBaselineEntry(ctx.cell.uuid, className, payload.actionHash) ??
+      baselineEntry(ctx.cell.uuid, className, payload.actionHash)
     const other = baseline
       ? toValues(className, baseline, map)
       : await instanceById(ctx, className, id)
@@ -222,6 +224,7 @@ function updateRow(className: string): Row {
     const inst = await instanceById(ctx, className, id)
     const wire = toWireRecord(className, inst, map)
     rememberBaseline(ctx.cell.uuid, className, wire)
+    rebaseEditBaseline(ctx.cell.uuid, className, wire)
     return wire
   }
 }
@@ -383,11 +386,13 @@ export const zomeTable: Record<string, Row> = {
   update_whoami: async (ctx, payload) => {
     const map = mapCtx(ctx.cell)
     const id = urlFor(ctx.cell, `profile/${ctx.cell.info.agentPubKey}`)
-    const baseline = baselineEntry(
-      ctx.cell.uuid,
-      'AcornProfile',
-      ctx.cell.info.agentPubKey
-    )
+    const baseline =
+      editBaselineEntry(
+        ctx.cell.uuid,
+        'AcornProfile',
+        ctx.cell.info.agentPubKey
+      ) ??
+      baselineEntry(ctx.cell.uuid, 'AcornProfile', ctx.cell.info.agentPubKey)
     const other = baseline
       ? toValues('AcornProfile', baseline, map)
       : await instanceById(ctx, 'AcornProfile', id)
@@ -408,6 +413,7 @@ export const zomeTable: Record<string, Row> = {
     const inst = await instanceById(ctx, 'AcornProfile', id)
     const wire = toWireRecord('AcornProfile', inst, map)
     rememberBaseline(ctx.cell.uuid, 'AcornProfile', wire)
+    rebaseEditBaseline(ctx.cell.uuid, 'AcornProfile', wire)
     return wire
   },
 
@@ -531,6 +537,19 @@ export const zomeTable: Record<string, Row> = {
   // zome's emit_realtime_info_signal / init_signal (added in B5). The
   // RealtimeInfoInput IS the zome's payload, passed through verbatim.
   emit_realtime_info_signal: async (ctx, payload) => {
+    // The payload names the outcomes the user's edit sessions are open on
+    // (the expanded view's outcome, and the focused title/description
+    // field's). Capture an immutable edit baseline for each newly opened
+    // session and drop the sessions that ended, so update_outcome diffs
+    // against the record as the user started editing it.
+    const wanted = new Set<string>()
+    if (typeof payload?.outcomeExpandedView === 'string') {
+      wanted.add(payload.outcomeExpandedView)
+    }
+    if (typeof payload?.outcomeBeingEdited?.outcomeActionHash === 'string') {
+      wanted.add(payload.outcomeBeingEdited.outcomeActionHash)
+    }
+    syncEditBaselines(ctx.cell.uuid, 'AcornOutcome', wanted)
     await interact(
       ctx.call,
       `${ctx.cell.lang}://project`,
