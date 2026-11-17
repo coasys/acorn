@@ -434,6 +434,42 @@ describe('startLive init/resync buffering', () => {
     ])
   })
 
+  it('a delta that cannot apply does not commit its revision: the same-revision recovery snapshot applies', async () => {
+    const a1 = outcomeInstance(OUTCOME_A)
+    const { client, calls, emitted, fire, resolvers, deferred } =
+      deferredClient()
+    deferred.modelSubscribe = false
+    await startLive(client, cell)
+
+    const outcomeSub = calls.find(
+      (c) => c.params.class_name === 'AcornOutcome'
+    )!
+    // revision 1 names an id this client never had and the frame carries no
+    // upsert for it: the delta cannot apply, so the subscription resyncs.
+    // The failed delta must NOT have moved the revision counter — otherwise
+    // the recovery snapshot carrying that very revision is discarded as stale.
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 1,
+      ids: [a1.id],
+      upsert: [],
+    })
+    await tick()
+
+    // the recovery snapshot comes back AT revision 1
+    resolvers.get(`resync:${outcomeSub.params.subscriptionId}`)!({
+      revision: 1,
+      result: { instances: [a1], totalCount: 1 },
+    })
+    await tick()
+
+    const actions = emitted
+      .map(decodeSignal)
+      .map((d) => [d.data.action, d.data.data.actionHash])
+    expect(actions).toEqual([['create', OUTCOME_A]])
+  })
+
   it('a resync snapshot behind the applied revision is rejected', async () => {
     const a1 = outcomeInstance(OUTCOME_A)
     const { client, calls, emitted, fire, resolvers, deferred } =

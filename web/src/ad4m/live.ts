@@ -309,11 +309,12 @@ export async function startLive(
         resync(sub)
         return
       }
-      sub.revision = msg.revision
     }
     // a whole-result delta replaces the last result outright
     if ('result' in msg) {
       replace(sub, instancesOf(msg.result))
+      // the revision counts once the frame applied (below)
+      if (typeof msg.revision === 'number') sub.revision = msg.revision
       return
     }
     if (!Array.isArray(msg.ids)) {
@@ -337,6 +338,10 @@ export async function startLive(
       emitChange(sub.className, change)
     }
     sub.last = next
+    // Commit the revision only now that the delta applied. A delta that ends
+    // in resync leaves the counter at the last applied revision, so the
+    // recovery snapshot carrying this same revision is not rejected as stale.
+    if (typeof msg.revision === 'number') sub.revision = msg.revision
   }
 
   // listen before the first subscribe call so no update can slip between
