@@ -334,6 +334,61 @@ function fakeWriteRpc(opts: {
 }
 
 describe('zomeTable write rows', () => {
+  test('update_outcome sends only the changed keys', async () => {
+    const inst = outcomeInstance('o1')
+    const { calls, call } = fakeWriteRpc({
+      canned: () => ({ AcornOutcome: [inst] }),
+    })
+    const res = await dispatchZomeCall(call, cell, 'update_outcome', {
+      actionHash: 'o1',
+      entry: outcomeEntry({ content: 'renamed by ad4m' }),
+    })
+    const updates = calls.filter(
+      (c) => c.method === 'perspective.updateSubject'
+    )
+    expect(updates).toHaveLength(1)
+    expect(updates[0].params).toMatchObject({
+      uuid: UUID,
+      subjectClass: 'AcornOutcome',
+      expressionAddress: url('o1'),
+    })
+    expect(JSON.parse(updates[0].params.values)).toEqual({
+      content: 'renamed by ad4m',
+    })
+    expect(res.actionHash).toBe('o1')
+    expect(res.entry.content).toBe('Stock outcome')
+  })
+
+  test('update_whoami updates the own profile address', async () => {
+    const inst = profileInstance()
+    const { calls, call } = fakeWriteRpc({
+      canned: () => ({ AcornProfile: [inst] }),
+    })
+    await dispatchZomeCall(call, cell, 'update_whoami', {
+      actionHash: AGENT_B64,
+      entry: {
+        firstName: 'Renamed',
+        lastName: 'Rig',
+        handle: 'stockrig',
+        status: 'Online',
+        avatarUrl: '',
+        agentPubKey: AGENT_B64,
+        isImported: false,
+      },
+    })
+    const updates = calls.filter(
+      (c) => c.method === 'perspective.updateSubject'
+    )
+    expect(updates).toHaveLength(1)
+    expect(updates[0].params.subjectClass).toBe('AcornProfile')
+    expect(updates[0].params.expressionAddress).toBe(
+      url(`profile/${AGENT_B64}`)
+    )
+    expect(JSON.parse(updates[0].params.values)).toEqual({
+      firstName: 'Renamed',
+    })
+  })
+
   test('create_outcome_with_connection, ExistingOutcomeAsParent: one create with parent+siblingOrder', async () => {
     const canned = {
       AcornOutcome: [outcomeInstance('newout')],

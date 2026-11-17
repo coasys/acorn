@@ -176,6 +176,33 @@ function createRow(className: string, unwrap?: (p: any) => any): Row {
   }
 }
 
+/** hdk_crud `update_<type>` ({actionHash, entry}): one updateSubject carrying
+ *  only the mount props that differ from the current instance — one UI save
+ *  is one `update` call into the language, not a full-entry rewrite. */
+function updateRow(className: string): Row {
+  return async (ctx, payload) => {
+    const map = mapCtx(ctx.cell)
+    const id = urlFor(ctx.cell, payload.actionHash)
+    const current = await instanceById(ctx, className, id)
+    const values = changedValues(
+      toValues(className, payload.entry, map),
+      current
+    )
+    await ctx.call(
+      'perspective.updateSubject',
+      {
+        uuid: ctx.cell.uuid,
+        subjectClass: className,
+        expressionAddress: id,
+        values: JSON.stringify(values),
+      },
+      120000
+    )
+    const inst = await instanceById(ctx, className, id)
+    return toWireRecord(className, inst, map)
+  }
+}
+
 const projectMetaRows = (ctx: ZomeCtx) =>
   modelQuery(ctx.call, ctx.cell.uuid, 'AcornProjectMeta')
 
@@ -277,6 +304,39 @@ export const zomeTable: Record<string, Row> = {
     'AcornProjectMeta',
     (p) => p?.input ?? p
   ),
+
+  // --- updates (hdk_crud `update_<type>` — `{actionHash, entry}`) ---
+  update_outcome: updateRow('AcornOutcome'),
+  update_connection: updateRow('AcornConnection'),
+  update_entry_point: updateRow('AcornEntryPoint'),
+  update_outcome_comment: updateRow('AcornOutcomeComment'),
+  update_outcome_member: updateRow('AcornOutcomeMember'),
+  update_tag: updateRow('AcornTag'),
+  update_project_meta: updateRow('AcornProjectMeta'),
+
+  // the own profile's mount address is `profile/<own key>` (Correction 6) —
+  // the language's update reads through whoami and only allows the own key.
+  update_whoami: async (ctx, payload) => {
+    const map = mapCtx(ctx.cell)
+    const id = urlFor(ctx.cell, `profile/${ctx.cell.info.agentPubKey}`)
+    const current = await instanceById(ctx, 'AcornProfile', id)
+    const values = changedValues(
+      toValues('AcornProfile', payload?.entry ?? payload, map),
+      current
+    )
+    await ctx.call(
+      'perspective.updateSubject',
+      {
+        uuid: ctx.cell.uuid,
+        subjectClass: 'AcornProfile',
+        expressionAddress: id,
+        values: JSON.stringify(values),
+      },
+      120000
+    )
+    const inst = await instanceById(ctx, 'AcornProfile', id)
+    return toWireRecord('AcornProfile', inst, map)
+  },
 
   // `parent` on the outcome create is the mount's spelling of
   // `maybeLinkedOutcome: ExistingOutcomeAsParent`; `ExistingOutcomeAsChild`
