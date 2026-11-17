@@ -4,7 +4,7 @@ module.exports = {
   testEnvironment: 'node',
   extensionsToTreatAsEsm: ['.ts'],
   transform: {
-    '^.+\\.[tj]s$': [
+    '^.+\\.[tj]sx?$': [
       'babel-jest',
       {
         presets: [
@@ -22,8 +22,13 @@ module.exports = {
     ],
   },
   transformIgnorePatterns: [
-    'node_modules/(?!((@holochain/(client|serialization))|@theweave/api|@noble/ed25519|emittery|lodash-es).*)',
+    'node_modules/(?!((@holochain/(client|serialization))|@theweave/api|@noble/ed25519|emittery|lodash-es|zod-models).*)',
   ],
+  moduleNameMapper: {
+    '\\.(scss|sass|css|less)$': '<rootDir>/test/styleMock.js',
+    '\\.(svg|png|jpe?g|gif|webp|woff2?|ttf|eot|mp3|wav)$':
+      '<rootDir>/test/fileMock.js',
+  },
   setupFiles: ['<rootDir>/test/jest.setup.ts'],
   globals: {
     __MAIN_APP_ID__: 'test-main-app-id',
