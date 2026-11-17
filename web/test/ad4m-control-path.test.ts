@@ -6,7 +6,12 @@
 //
 // - Escape close with an unedited githubLink declares and sends nothing.
 // - Mounting the range picker is not a user edit: no timeFrame goes out.
+// - Picking only the range's start date writes nothing either: a
+//   half-picked range is a selection in progress, not a value (Lal round
+//   6 on C10).
 // - Clearing the range a peer added sends the model's clear (null).
+// - Picking a range then picking back the one the picker opened with
+//   declares no timeFrame on the last submit (the picker's changed flag).
 // - Selecting a value that differs from what the control shows is declared
 //   and sent even when it equals the stale view-open snapshot (the C9 fix).
 
@@ -14,6 +19,7 @@ import React from 'react'
 import TestRenderer, { act } from 'react-test-renderer'
 import { Provider } from 'react-redux'
 import { createStore } from 'redux'
+import moment from 'moment'
 import { DateRangePicker } from 'react-dates'
 import { Ad4mAppClient } from '../src/ad4m/Ad4mAppClient'
 import { CellCtx } from '../src/ad4m/zomeTable'
@@ -25,6 +31,7 @@ import ProjectsZomeApi from '../src/api/projectsApi'
 import { updateOutcome as updateOutcomeAction } from '../src/redux/persistent/projects/outcomes/actions'
 import AppWebsocketContext from '../src/context/AppWebsocketContext'
 import ConnectedExpandedViewMode from '../src/components/ExpandedViewMode/ExpandedViewMode.connector'
+import OutcomeRangePicker from '../src/components/DatePicker/DatePicker'
 import { ComputedScope, ComputedSimpleAchievementStatus } from '../src/types'
 
 jest.mock('../src/hcWebsockets', () => ({
@@ -271,6 +278,9 @@ const makeWorld = (initialInstance: any) => {
 const makeRenderer = (world: any) => {
   const store = makeStore()
   const onClose = jest.fn()
+  // the dirtyProps each updateOutcome call carried: what the control
+  // declared its user changed, before the adapter diff applies
+  const declared: (string[] | undefined)[] = []
   const props = (outcome: any) => ({
     projectId: PROJECT_ID,
     openExpandedView: () => {},
@@ -279,6 +289,7 @@ const makeRenderer = (world: any) => {
     outcomeAndAncestors: [outcome],
     onClose,
     updateOutcome: async (o: any, actionHash: string, dirtyProps?: string[]) => {
+      declared.push(dirtyProps)
       const appWebsocket = await getAppWs()
       const api = new ProjectsZomeApi(appWebsocket)
       const wire = await api.outcome.update(cellId, {
@@ -300,7 +311,7 @@ const makeRenderer = (world: any) => {
         React.createElement(ConnectedExpandedViewMode as any, props(outcome))
       )
     )
-  return { store, onClose, tree }
+  return { store, onClose, tree, declared }
 }
 
 const findByClass = (root: any, klass: string) =>
@@ -366,6 +377,91 @@ describe('expanded-view controls through the real connector', () => {
     await act(async () => flush())
 
     expect(world.updateValues().every((v) => !('timeFrame' in v))).toBe(true)
+  })
+
+  it('a half-picked range writes nothing when the picker closes', async () => {
+    const world = makeWorld(
+      outcomeInstance({ timeFrame: JSON.stringify(RANGE) })
+    )
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+
+    const { tree } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    const timeDisplay = findByClass(renderer!.root, 'ev-time-display')[0]
+    await act(async () => {
+      timeDisplay.props.onClick()
+    })
+    const drp = renderer!.root.findByType(DateRangePicker)
+    // the first click of a new range: react-dates reports the start date
+    // alone with the end still null — a selection in progress, not a value
+    await act(async () => {
+      drp.props.onDatesChange({
+        startDate: moment.unix(RANGE.toDate + 86400),
+        endDate: null,
+      })
+    })
+    // closing after the half pick must keep the stored range
+    const picker = renderer!.root.findByType(OutcomeRangePicker)
+    await act(async () => {
+      picker.props.onClose()
+    })
+    await act(async () => flush())
+
+    expect(world.updateValues().every((v) => !('timeFrame' in v))).toBe(true)
+  })
+
+  it('a range picked back to its opened-with value declares no timeFrame', async () => {
+    const world = makeWorld(
+      outcomeInstance({ timeFrame: JSON.stringify(RANGE) })
+    )
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+
+    const { tree, declared } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    const timeDisplay = findByClass(renderer!.root, 'ev-time-display')[0]
+    await act(async () => {
+      timeDisplay.props.onClick()
+    })
+    const drp = renderer!.root.findByType(DateRangePicker)
+    // pick a new range, then pick back the range the picker opened with
+    // (each range is start click then end click): the last submit reverts
+    // to the picker's own original, so it declares nothing
+    const NEW = {
+      fromDate: RANGE.fromDate + 86400,
+      toDate: RANGE.toDate + 86400,
+    }
+    for (const pick of [
+      { startDate: moment.unix(NEW.fromDate), endDate: null },
+      {
+        startDate: moment.unix(NEW.fromDate),
+        endDate: moment.unix(NEW.toDate),
+      },
+      { startDate: moment.unix(RANGE.fromDate), endDate: null },
+      {
+        startDate: moment.unix(RANGE.fromDate),
+        endDate: moment.unix(RANGE.toDate),
+      },
+    ]) {
+      await act(async () => {
+        drp.props.onDatesChange(pick)
+      })
+      await act(async () => flush())
+    }
+
+    expect(declared.length).toBeGreaterThan(0)
+    expect(
+      (declared[declared.length - 1] ?? []).includes('timeFrame')
+    ).toBe(false)
   })
 
   it('clearing the range picker sends the timeFrame clear', async () => {

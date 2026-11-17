@@ -69,6 +69,10 @@ function CustomDateRangePicker({ fromDate, toDate, onClose, onSet }) {
     }
     const from = dates.fromDate ? dates.fromDate.unix() : null
     const to = dates.toDate ? dates.toDate.unix() : null
+    // a half-picked range (one date set, the other null) is a selection in
+    // progress, not a value: submit only a complete range or the
+    // both-null "clear all"
+    if ((from == null) !== (to == null)) return
     onSet(
       from,
       to,
