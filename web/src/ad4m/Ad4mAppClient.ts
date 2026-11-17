@@ -23,6 +23,7 @@ import { Ad4mRpc } from './rpc'
 import { acornLanguageAddress } from './mode'
 import { dispatchZomeCall, CellCtx } from './zomeTable'
 import { startLive, LiveHandle } from './live'
+import { forgetCellBaselines } from './baselines'
 import { cellIdToString } from '../utils'
 import { MAIN_APP_ID, PROJECTS_ROLE_NAME } from '../holochainConfig'
 
@@ -110,6 +111,7 @@ export class Ad4mAppClient {
         this.learnAgentKey(row.info)
         await this.startLiveFor(row.cellIdString, row)
       } else {
+        forgetCellBaselines(row.uuid)
         changed = true
       }
     }
@@ -339,6 +341,7 @@ export class Ad4mAppClient {
     })
     await this.rpc.call('perspective.remove', { uuid: found.uuid })
     this.cells.delete(foundKey)
+    forgetCellBaselines(found.uuid)
     this.persistCells()
   }
 

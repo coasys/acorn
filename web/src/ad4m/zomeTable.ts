@@ -9,6 +9,12 @@
 // fn_name with no row throws `AD4M mode: <fn> not implemented yet`.
 
 import { toEntry, toValues, toWireRecord, urlToHash, MapCtx } from './mapping'
+import {
+  baselineEntry,
+  forgetBaseline,
+  rememberBaseline,
+  rememberBaselineEntry,
+} from './baselines'
 
 export type RpcCall = (
   method: string,
@@ -83,7 +89,9 @@ export async function interact(
 function fetchClass(className: string): Row {
   return async ({ call, cell }) => {
     const rows = await modelQuery(call, cell.uuid, className)
-    return rows.map((r) => toWireRecord(className, r, mapCtx(cell)))
+    const wires = rows.map((r) => toWireRecord(className, r, mapCtx(cell)))
+    for (const wire of wires) rememberBaseline(cell.uuid, className, wire)
+    return wires
   }
 }
 
@@ -137,9 +145,9 @@ async function instanceById(
   throw new Error(`${className} ${id}: not in the mounted data`)
 }
 
-/** The keys of `values` that differ from the current instance, so one UI
- *  save is one update call carrying only the props that moved. null and
- *  absent both read as "no value". */
+/** The keys of `values` that differ from `other` (a current instance or the
+ *  baseline's mount values), so one UI save is one update call carrying only
+ *  the props that moved. null and absent both read as "no value". */
 function changedValues(
   values: Record<string, unknown>,
   instance: Record<string, unknown>
@@ -172,21 +180,34 @@ function createRow(className: string, unwrap?: (p: any) => any): Row {
       toValues(className, entry, map)
     )
     const inst = await instanceById(ctx, className, id)
-    return toWireRecord(className, inst, map)
+    const wire = toWireRecord(className, inst, map)
+    rememberBaseline(ctx.cell.uuid, className, wire)
+    return wire
   }
 }
 
 /** hdk_crud `update_<type>` ({actionHash, entry}): one updateSubject carrying
- *  only the mount props that differ from the current instance — one UI save
- *  is one `update` call into the language, not a full-entry rewrite. */
+ *  only the mount props the user's entry changed — one UI save is one
+ *  `update` call into the language, not a full-entry rewrite. The diff runs
+ *  against the baseline: the entry as this client last produced it for the
+ *  record (what the user started editing). A fresh fetch would read a peer's
+ *  concurrent edit back into the diff and the user's stale value would
+ *  overwrite it; only a record this client never produced falls back to it. */
 function updateRow(className: string): Row {
   return async (ctx, payload) => {
     const map = mapCtx(ctx.cell)
     const id = urlFor(ctx.cell, payload.actionHash)
-    const current = await instanceById(ctx, className, id)
+    const baseline = baselineEntry(
+      ctx.cell.uuid,
+      className,
+      payload.actionHash
+    )
+    const other = baseline
+      ? toValues(className, baseline, map)
+      : await instanceById(ctx, className, id)
     const values = changedValues(
       toValues(className, payload.entry, map),
-      current
+      other
     )
     await ctx.call(
       'perspective.updateSubject',
@@ -199,7 +220,9 @@ function updateRow(className: string): Row {
       120000
     )
     const inst = await instanceById(ctx, className, id)
-    return toWireRecord(className, inst, map)
+    const wire = toWireRecord(className, inst, map)
+    rememberBaseline(ctx.cell.uuid, className, wire)
+    return wire
   }
 }
 
@@ -209,6 +232,7 @@ function deleteRow(className: string): Row {
   return async (ctx, payload) => {
     const hash =
       typeof payload === 'string' ? payload : payload?.input ?? payload
+    forgetBaseline(ctx.cell.uuid, className, hash)
     await ctx.call(
       'perspective.removeSubject',
       {
@@ -228,11 +252,13 @@ const projectMetaRows = (ctx: ZomeCtx) =>
 async function whoamiRow(ctx: ZomeCtx): Promise<any> {
   const res = await interact(ctx.call, `${ctx.cell.lang}://project`, 'whoami', {})
   if (!res || !res.address || !res.data) return null
-  return toWireRecord(
+  const wire = toWireRecord(
     'AcornProfile',
     { ...res.data, id: `${ctx.cell.lang}://${res.address}` },
     mapCtx(ctx.cell)
   )
+  rememberBaseline(ctx.cell.uuid, 'AcornProfile', wire)
+  return wire
 }
 
 export const zomeTable: Record<string, Row> = {
@@ -249,7 +275,9 @@ export const zomeTable: Record<string, Row> = {
       // the stock zome errors with this exact text; the UI pattern-matches it
       throw new Error('no project meta exists')
     }
-    return toWireRecord('AcornProjectMeta', rows[0], mapCtx(ctx.cell))
+    const wire = toWireRecord('AcornProjectMeta', rows[0], mapCtx(ctx.cell))
+    rememberBaseline(ctx.cell.uuid, 'AcornProjectMeta', wire)
+    return wire
   },
   check_project_meta_exists: async (ctx) =>
     (await projectMetaRows(ctx)).length > 0,
@@ -259,7 +287,18 @@ export const zomeTable: Record<string, Row> = {
   // fetch_agents returns bare Profiles, not WireRecords (Correction 6)
   fetch_agents: async ({ call, cell }) => {
     const rows = await modelQuery(call, cell.uuid, 'AcornProfile')
-    return rows.map((r) => toEntry('AcornProfile', r, mapCtx(cell)))
+    const entries = rows.map((r) => toEntry('AcornProfile', r, mapCtx(cell)))
+    for (const entry of entries) {
+      if (typeof entry.agentPubKey === 'string') {
+        rememberBaselineEntry(
+          cell.uuid,
+          'AcornProfile',
+          entry.agentPubKey,
+          entry
+        )
+      }
+    }
+    return entries
   },
 
   whoami: whoamiRow,
@@ -277,6 +316,12 @@ export const zomeTable: Record<string, Row> = {
     const outcomes = (await modelQuery(call, cell.uuid, 'AcornOutcome'))
       .filter((r) => wanted.has(urlToHash(r.id, cell.lang)))
       .map((r) => toWireRecord('AcornOutcome', r, ctx))
+    for (const wire of entryPoints) {
+      rememberBaseline(cell.uuid, 'AcornEntryPoint', wire)
+    }
+    for (const wire of outcomes) {
+      rememberBaseline(cell.uuid, 'AcornOutcome', wire)
+    }
     return { entryPoints, outcomes }
   },
 
@@ -338,10 +383,17 @@ export const zomeTable: Record<string, Row> = {
   update_whoami: async (ctx, payload) => {
     const map = mapCtx(ctx.cell)
     const id = urlFor(ctx.cell, `profile/${ctx.cell.info.agentPubKey}`)
-    const current = await instanceById(ctx, 'AcornProfile', id)
+    const baseline = baselineEntry(
+      ctx.cell.uuid,
+      'AcornProfile',
+      ctx.cell.info.agentPubKey
+    )
+    const other = baseline
+      ? toValues('AcornProfile', baseline, map)
+      : await instanceById(ctx, 'AcornProfile', id)
     const values = changedValues(
       toValues('AcornProfile', payload?.entry ?? payload, map),
-      current
+      other
     )
     await ctx.call(
       'perspective.updateSubject',
@@ -354,7 +406,9 @@ export const zomeTable: Record<string, Row> = {
       120000
     )
     const inst = await instanceById(ctx, 'AcornProfile', id)
-    return toWireRecord('AcornProfile', inst, map)
+    const wire = toWireRecord('AcornProfile', inst, map)
+    rememberBaseline(ctx.cell.uuid, 'AcornProfile', wire)
+    return wire
   },
 
   // --- deletes (hdk_crud `delete_<type>` — payload is the actionHash) ---
@@ -395,8 +449,13 @@ export const zomeTable: Record<string, Row> = {
     )
     const gone = async (className: string, was: Set<string>) => {
       const now = await querySet(className)
-      return [...was].filter((h) => !now.has(h))
+      const missing = [...was].filter((h) => !now.has(h))
+      for (const h of missing) {
+        forgetBaseline(ctx.cell.uuid, className, h)
+      }
+      return missing
     }
+    forgetBaseline(ctx.cell.uuid, 'AcornOutcome', hash)
     return {
       outcomeActionHash: hash,
       deletedConnections: await gone('AcornConnection', before.connections),
@@ -457,12 +516,15 @@ export const zomeTable: Record<string, Row> = {
       connInst = await instanceById(ctx, 'AcornConnection', connId)
     }
 
-    return {
-      outcome: toWireRecord('AcornOutcome', outcomeInst, map),
-      maybeConnection: connInst
-        ? toWireRecord('AcornConnection', connInst, map)
-        : null,
+    const outcomeWire = toWireRecord('AcornOutcome', outcomeInst, map)
+    const connWire = connInst
+      ? toWireRecord('AcornConnection', connInst, map)
+      : null
+    rememberBaseline(ctx.cell.uuid, 'AcornOutcome', outcomeWire)
+    if (connWire) {
+      rememberBaseline(ctx.cell.uuid, 'AcornConnection', connWire)
     }
+    return { outcome: outcomeWire, maybeConnection: connWire }
   },
 
   // --- presence out: the language's `project` interactions forward to the

@@ -352,6 +352,7 @@ function fakeWriteRpc(opts: {
   createdUrls?: string[]
   interact?: any
   onRemove?: () => void
+  onUpdate?: () => void
 }) {
   const calls: { method: string; params: any }[] = []
   const created = [...(opts.createdUrls ?? [])]
@@ -367,7 +368,10 @@ function fakeWriteRpc(opts: {
     if (method === 'perspective.createSubject') {
       return created.length ? created.shift()! : url('created-hash')
     }
-    if (method === 'perspective.updateSubject') return true
+    if (method === 'perspective.updateSubject') {
+      opts.onUpdate?.()
+      return true
+    }
     if (method === 'perspective.removeSubject') {
       opts.onRemove?.()
       return true
@@ -659,5 +663,136 @@ describe('zomeTable write rows', () => {
     expect(interacts[0].params.url).toBe(`${LANG}://project`)
     expect(interacts[0].params.interactionCall.name).toBe('announceJoin')
     expect(res).toBeNull()
+  })
+})
+
+// ---- update baselines (Lal review Part 3: "changed keys overwrites
+//  concurrent edits") -------------------------------------------------------
+//
+// The changed-keys diff must run against the entry the user started editing —
+// the WireRecord this client last produced for the record — not a fresh
+// fetch. A fresh fetch reads a peer's concurrent edit back into the diff and
+// the user's stale value overwrites it.
+describe('update baselines', () => {
+  const EDIT_CELL: CellCtx = {
+    ...cell,
+    uuid: 'persp-uuid-baselines',
+  }
+
+  test('a peer edit on another key survives the update', async () => {
+    // the record the user fetched and started editing
+    let current = {
+      ...outcomeInstance('oB1'),
+      content: 'as fetched',
+      description: '',
+    }
+    const { calls, call } = fakeWriteRpc({
+      canned: () => ({ AcornOutcome: [current] }),
+    })
+    await dispatchZomeCall(call, EDIT_CELL, 'fetch_outcomes', null)
+
+    // a peer renamed the content while our user was editing the description
+    current = { ...current, content: 'peer rename' }
+
+    await dispatchZomeCall(call, EDIT_CELL, 'update_outcome', {
+      actionHash: 'oB1',
+      entry: outcomeEntry({
+        content: 'as fetched',
+        description: 'user desc',
+      }),
+    })
+    const updates = calls.filter(
+      (c) => c.method === 'perspective.updateSubject'
+    )
+    expect(updates).toHaveLength(1)
+    // fresh-fetch diff would also send content:'as fetched', reverting the
+    // peer's rename; the baseline diff sends only the key the user changed
+    expect(JSON.parse(updates[0].params.values)).toEqual({
+      description: 'user desc',
+    })
+  })
+
+  test('a peer edit the user folded into their entry is not resent', async () => {
+    let current = {
+      ...outcomeInstance('oB2'),
+      content: 'as fetched',
+      description: 'old desc',
+    }
+    const { calls, call } = fakeWriteRpc({
+      canned: () => ({ AcornOutcome: [current] }),
+    })
+    // the user fetched, saw the peer's rename, then edited the description
+    current = { ...current, content: 'peer rename' }
+    await dispatchZomeCall(call, EDIT_CELL, 'fetch_outcomes', null)
+
+    await dispatchZomeCall(call, EDIT_CELL, 'update_outcome', {
+      actionHash: 'oB2',
+      entry: outcomeEntry({
+        content: 'peer rename',
+        description: 'user desc',
+      }),
+    })
+    const updates = calls.filter(
+      (c) => c.method === 'perspective.updateSubject'
+    )
+    expect(JSON.parse(updates[0].params.values)).toEqual({
+      description: 'user desc',
+    })
+  })
+
+  test('a second update diffs against the first update, not a stale baseline', async () => {
+    let current = { ...outcomeInstance('oB3'), content: 'as fetched' }
+    // the mount's state moves forward as each update lands
+    const after: (() => void)[] = [
+      () => {
+        current = { ...current, content: 'user rename' }
+      },
+      () => {
+        current = { ...current, githubLink: 'user link' }
+      },
+    ]
+    const { calls, call } = fakeWriteRpc({
+      canned: () => ({ AcornOutcome: [current] }),
+      onUpdate: () => after.shift()?.(),
+    })
+    await dispatchZomeCall(call, EDIT_CELL, 'fetch_outcomes', null)
+
+    // first update: rename; the mount now holds the renamed record
+    await dispatchZomeCall(call, EDIT_CELL, 'update_outcome', {
+      actionHash: 'oB3',
+      entry: outcomeEntry({ content: 'user rename' }),
+    })
+
+    // second update, another field: the baseline moved with the first result
+    calls.length = 0
+    await dispatchZomeCall(call, EDIT_CELL, 'update_outcome', {
+      actionHash: 'oB3',
+      entry: outcomeEntry({
+        content: 'user rename',
+        githubLink: 'user link',
+      }),
+    })
+    const updates = calls.filter(
+      (c) => c.method === 'perspective.updateSubject'
+    )
+    expect(JSON.parse(updates[0].params.values)).toEqual({
+      githubLink: 'user link',
+    })
+  })
+
+  test('no baseline still diffs against a fresh fetch', async () => {
+    const inst = { ...outcomeInstance('oB9'), content: 'on the mount' }
+    const { calls, call } = fakeWriteRpc({
+      canned: () => ({ AcornOutcome: [inst] }),
+    })
+    // no fetch first: update falls back to fetching the current instance
+    await dispatchZomeCall(call, EDIT_CELL, 'update_outcome', {
+      actionHash: 'oB9',
+      entry: outcomeEntry({ content: 'on the mount', description: 'd' }),
+    })
+    const updates = calls.filter(
+      (c) => c.method === 'perspective.updateSubject'
+    )
+    expect(JSON.parse(updates[0].params.values)).toEqual({ description: 'd' })
   })
 })
