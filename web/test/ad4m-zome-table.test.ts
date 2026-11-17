@@ -620,4 +620,44 @@ describe('zomeTable write rows', () => {
     })
     expect(res).toBe('taghash1')
   })
+
+  test('emit_realtime_info_signal goes to the sendRealtimeInfo interaction', async () => {
+    const { calls, call } = fakeWriteRpc({ canned: () => ({}) })
+    const res = await dispatchZomeCall(
+      call,
+      cell,
+      'emit_realtime_info_signal',
+      {
+        projectId: 'some-project',
+        outcomeBeingEdited: null,
+        outcomeExpandedView: null,
+      }
+    )
+    const interacts = calls.filter(
+      (c) => c.method === 'expression.interact'
+    )
+    expect(interacts).toHaveLength(1)
+    expect(interacts[0].params.url).toBe(`${LANG}://project`)
+    expect(interacts[0].params.interactionCall.name).toBe('sendRealtimeInfo')
+    expect(
+      JSON.parse(interacts[0].params.interactionCall.parametersStringified)
+    ).toEqual({
+      projectId: 'some-project',
+      outcomeBeingEdited: null,
+      outcomeExpandedView: null,
+    })
+    expect(res).toBeNull()
+  })
+
+  test('init_signal goes to the announceJoin interaction', async () => {
+    const { calls, call } = fakeWriteRpc({ canned: () => ({}) })
+    const res = await dispatchZomeCall(call, cell, 'init_signal', null)
+    const interacts = calls.filter(
+      (c) => c.method === 'expression.interact'
+    )
+    expect(interacts).toHaveLength(1)
+    expect(interacts[0].params.url).toBe(`${LANG}://project`)
+    expect(interacts[0].params.interactionCall.name).toBe('announceJoin')
+    expect(res).toBeNull()
+  })
 })

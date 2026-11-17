@@ -464,6 +464,23 @@ export const zomeTable: Record<string, Row> = {
         : null,
     }
   },
+
+  // --- presence out: the language's `project` interactions forward to the
+  // zome's emit_realtime_info_signal / init_signal (added in B5). The
+  // RealtimeInfoInput IS the zome's payload, passed through verbatim.
+  emit_realtime_info_signal: async (ctx, payload) => {
+    await interact(
+      ctx.call,
+      `${ctx.cell.lang}://project`,
+      'sendRealtimeInfo',
+      payload
+    )
+    return null
+  },
+  init_signal: async (ctx) => {
+    await interact(ctx.call, `${ctx.cell.lang}://project`, 'announceJoin', {})
+    return null
+  },
 }
 
 export async function dispatchZomeCall(
