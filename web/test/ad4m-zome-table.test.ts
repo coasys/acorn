@@ -1030,4 +1030,78 @@ describe('update baselines vs. live delivery', () => {
     })
     expect(world.updateValues().slice(1)).toEqual([])
   })
+
+  // ---- post-save rebase of the field original (Lal review round 3,
+  //  "Related lifecycle concern": save-then-continue in the same open
+  //  view) ------------------------------------------------------------
+  //
+  // A field session's original must move to the value its own save landed,
+  // or a later save from the same still-open view diffs against the
+  // pre-save value: a stale draft then resends over a peer's move, or a
+  // deliberate revert drops. `rebaseEditBaseline(..., sentProps)` moves it
+  // per sent prop — these tests pin it.
+  test('a saved field is not resent over a peer value by a later save in the same open view', async () => {
+    const a = { ...outcomeInstance('oG1'), content: 'title A', description: '' }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    // the expanded view opens on title A; focusing the title freezes A as
+    // the field's original; the user saves title B and blurs
+    await world.openEditor('oG1')
+    await world.focusField('oG1', true)
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oG1',
+      entry: outcomeEntry({ content: 'title B' }),
+    })
+    await world.openEditor('oG1') // endTitleEdit: the view stays open
+
+    // a peer moves the title on to C; the view still shows the B the user
+    // saved
+    world.fireOutcome(1, [{ ...a, content: 'peer title C' }])
+
+    // the user edits the description and saves; the entry still carries
+    // title B. If the save had left the title's original at A, B would diff
+    // as a change and resend — reverting the peer's C.
+    await world.focusField('oG1', false)
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oG1',
+      entry: outcomeEntry({ content: 'title B', description: 'user desc' }),
+    })
+    expect(world.updateValues()).toEqual([
+      { content: 'title B' },
+      { description: 'user desc' },
+    ])
+  })
+
+  test('a title edited again in the same field session diffs against the saved value, not the session start', async () => {
+    const a = { ...outcomeInstance('oG2'), content: 'title A' }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    // the title's field session opens at A; another surface's save (a tag
+    // pick, a date submit — any updateOutcomeWithLatest) lands mid-session
+    // carrying the title B the user typed, so the session's original moves
+    // to B — and a peer's C arrives meanwhile
+    await world.openEditor('oG2')
+    await world.focusField('oG2', true)
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oG2',
+      entry: outcomeEntry({ content: 'title B' }),
+    })
+    world.fireOutcome(1, [{ ...a, content: 'peer title C' }])
+
+    // the user types the title back to A in the same still-open session.
+    // Against original B that is a real change and must go out; an original
+    // still frozen at A would see no diff and silently drop the revert.
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oG2',
+      entry: outcomeEntry({ content: 'title A' }),
+    })
+    expect(world.updateValues()).toEqual([
+      { content: 'title B' },
+      { content: 'title A' },
+    ])
+  })
 })
