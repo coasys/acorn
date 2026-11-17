@@ -243,10 +243,21 @@ function updateRow(className: string): Row {
       if (remoteBase) return mountOf(remoteBase)
       return fetched ?? undefined
     }
-    const values = changedValues(
-      toValues(className, payload.entry, map),
-      otherFor
-    )
+    const all = toValues(className, payload.entry, map)
+    const values = changedValues(all, otherFor)
+    // A prop the calling control declares it changed always goes out:
+    // controls with no field baseline (tags, dates, scope, status, the
+    // task list) diff against the view-open record snapshot, and a peer's
+    // mid-view move makes exactly the revert the user means by setting
+    // the value back look like "no change" (Lal round 4, P2-1).
+    const dirty: unknown = payload?.dirtyProps
+    if (Array.isArray(dirty)) {
+      for (const prop of dirty) {
+        if (typeof prop === 'string' && prop in all) {
+          values[prop] = all[prop]
+        }
+      }
+    }
     // a save that changed nothing sends nothing: an empty updateSubject
     // would still commit a do-nothing action
     if (Object.keys(values).length) {

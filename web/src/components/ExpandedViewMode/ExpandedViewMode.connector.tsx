@@ -70,7 +70,11 @@ export type ConnectedExpandedViewModeProps = {
   outcome: ComputedOutcome | null
   outcomeAndAncestors: ComputedOutcome[]
   onClose: () => void
-  updateOutcome: (outcome: Outcome, actionHash: string) => Promise<void>
+  updateOutcome: (
+    outcome: Outcome,
+    actionHash: string,
+    dirtyProps?: string[]
+  ) => Promise<void>
   createOutcomeWithConnection: (
     outcomeWithConnection: CreateOutcomeWithConnectionInput
   ) => Promise<void>
@@ -153,7 +157,7 @@ const ConnectedExpandedViewMode: React.FC<ConnectedExpandedViewModeProps> = ({
       // we should let Map View handle the Escape key
       if (event.key === 'Escape') {
         const updateTo = localCleanOutcome()
-        await updateOutcome(updateTo, outcome.actionHash)
+        await updateOutcome(updateTo, outcome.actionHash, ['githubLink'])
 
         onClose()
       }
@@ -179,8 +183,8 @@ const ConnectedExpandedViewMode: React.FC<ConnectedExpandedViewModeProps> = ({
       githubLink: githubInputLinkText,
     }
   }
-  const updateOutcomeWithLatest = async () => {
-    await updateOutcome(localCleanOutcome(), outcome.actionHash)
+  const updateOutcomeWithLatest = async (dirtyProps?: string[]) => {
+    await updateOutcome(localCleanOutcome(), outcome.actionHash, dirtyProps)
   }
 
   const updateOutcomeTaskList = (taskList: Array<SmallTask>) => {
@@ -197,7 +201,8 @@ const ConnectedExpandedViewMode: React.FC<ConnectedExpandedViewModeProps> = ({
           },
         },
       },
-      outcome.actionHash
+      outcome.actionHash,
+      ['taskList']
     )
   }
 

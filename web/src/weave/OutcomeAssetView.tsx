@@ -168,7 +168,8 @@ const OutcomeAssetView: React.FC<OutcomeAssetViewProps> = ({ wal }) => {
   }
   const updateOutcomeCallback = async (
     outcome: Outcome,
-    actionHash: ActionHashB64
+    actionHash: ActionHashB64,
+    dirtyProps?: string[]
   ) => {
     const appWebsocket = await getAppWs()
     const projectsZomeApi = new ProjectsZomeApi(appWebsocket)
@@ -176,6 +177,7 @@ const OutcomeAssetView: React.FC<OutcomeAssetViewProps> = ({ wal }) => {
     const outcomeWireRecord = await projectsZomeApi.outcome.update(cellId, {
       entry: outcome,
       actionHash,
+      dirtyProps,
     })
     return dispatch(updateOutcome(projectId, outcomeWireRecord))
   }

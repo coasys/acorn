@@ -1104,4 +1104,60 @@ describe('update baselines vs. live delivery', () => {
       { content: 'title A' },
     ])
   })
+
+  // ---- non-text props reverted to the view-open value (Lal round 4,
+  //  P2-1: "Non-text fields retain the original lost-revert bug") ----------
+  //
+  // Only content/description have field baselines; every other prop falls
+  // back to the record baseline frozen at view open. A peer's mid-view move
+  // leaves that baseline behind, so setting the prop back to what the view
+  // opened with diffs as "no change" and the revert is dropped. The
+  // controls that make these immediate changes declare the props they set
+  // (`dirtyProps`), and updateRow always sends a declared prop while the
+  // rest still diff as before.
+  test('tags selected back to the view-open set still send', async () => {
+    const a = { ...outcomeInstance('oH1'), tags: [url('tagA')] }
+    const b = { ...a, tags: [url('tagB')] }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    // the expanded view opens on tags [tagA]; the live stream then moves
+    // them to [tagB], which the component now displays
+    await world.openEditor('oH1')
+    world.fireOutcome(1, [b])
+
+    // the user selects tagA again — the tags control declares `tags`
+    // dirty, so the revert goes out even though it equals the view-open
+    // baseline
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oH1',
+      entry: outcomeEntry({ tags: ['tagA'] }),
+      dirtyProps: ['tags'],
+    })
+    expect(world.updateValues()).toEqual([{ tags: [url('tagA')] }])
+  })
+
+  test('achievementStatus set back to the view-open value still sends', async () => {
+    const a = {
+      ...outcomeInstance('oH2'),
+      achievementStatus: 'NotAchieved',
+    }
+    const b = { ...a, achievementStatus: 'Achieved' }
+    const world = liveEditWorld({ AcornOutcome: [a] })
+    await startLive(world.client, liveCell)
+    await dispatchZomeCall(world.call, liveCell, 'fetch_outcomes', null)
+
+    await world.openEditor('oH2')
+    world.fireOutcome(1, [b])
+
+    await dispatchZomeCall(world.call, liveCell, 'update_outcome', {
+      actionHash: 'oH2',
+      entry: outcomeEntry({}), // Small, achievementStatus 'NotAchieved'
+      dirtyProps: ['achievementStatus'],
+    })
+    expect(world.updateValues()).toEqual([
+      { achievementStatus: 'NotAchieved' },
+    ])
+  })
 })

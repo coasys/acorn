@@ -53,12 +53,17 @@ function mapDispatchToProps(
   const { projectId: cellIdString } = ownProps
   const cellId = cellIdFromString(cellIdString)
   return {
-    updateOutcome: async (outcome: Outcome, actionHash: ActionHashB64) => {
+    updateOutcome: async (
+      outcome: Outcome,
+      actionHash: ActionHashB64,
+      dirtyProps?: string[]
+    ) => {
       const appWebsocket = await getAppWs()
       const projectsZomeApi = new ProjectsZomeApi(appWebsocket)
       const updatedOutcome = await projectsZomeApi.outcome.update(cellId, {
         actionHash,
         entry: outcome,
+        dirtyProps,
       })
       return dispatch(updateOutcome(cellIdString, updatedOutcome))
     },

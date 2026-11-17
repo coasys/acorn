@@ -50,7 +50,11 @@ export type ProjectViewInnerConnectorDispatchProps = {
   createOutcomeWithConnection: (
     outcomeWithConnection: CreateOutcomeWithConnectionInput
   ) => Promise<void>
-  updateOutcome: (outcome: Outcome, actionHash: ActionHashB64) => Promise<void>
+  updateOutcome: (
+    outcome: Outcome,
+    actionHash: ActionHashB64,
+    dirtyProps?: string[]
+  ) => Promise<void>
   fetchProjectMeta: () => Promise<void>
   fetchEntryPoints: () => Promise<void>
   fetchMembers: () => Promise<void>

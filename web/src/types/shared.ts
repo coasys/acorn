@@ -19,6 +19,11 @@ export type HdkCrudAction<EntryType> =
 export interface UpdateInput<CommittedType> {
   actionHash: ActionHashB64
   entry: CommittedType
+  /** client-side hint naming the mount props the calling control changed;
+   *  the AD4M update row always sends them while every other prop still
+   *  diffs against its baseline. The stock zome ignores the extra field
+   *  (its UpdateInput does not deny unknown keys). */
+  dirtyProps?: string[]
 }
 
 export interface FetchInputAll {

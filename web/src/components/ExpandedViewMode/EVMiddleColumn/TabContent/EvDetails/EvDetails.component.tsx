@@ -42,8 +42,12 @@ export type EvDetailsOwnProps = {
   setContent: React.Dispatch<React.SetStateAction<string>>
   setGithubInputLinkText: React.Dispatch<React.SetStateAction<string>>
   setDescription: React.Dispatch<React.SetStateAction<string>>
-  updateOutcome: (outcome: Outcome, actionHash: ActionHashB64) => Promise<void>
-  updateOutcomeWithLatest: () => Promise<void>
+  updateOutcome: (
+    outcome: Outcome,
+    actionHash: ActionHashB64,
+    dirtyProps?: string[]
+  ) => Promise<void>
+  updateOutcomeWithLatest: (dirtyProps?: string[]) => Promise<void>
   cleanOutcome: () => Outcome
   rightColumn: React.ReactNode
 }
@@ -221,7 +225,7 @@ const EvDetails: React.FC<EvDetailsProps> = ({
             timeFrame,
           },
         }
-        await updateOutcome(cleaned, outcomeActionHash)
+        await updateOutcome(cleaned, outcomeActionHash, ['timeFrame'])
       }
     } else if (outcome.computedScope === ComputedScope.Small) {
       // Small
@@ -240,7 +244,7 @@ const EvDetails: React.FC<EvDetailsProps> = ({
             targetDate,
           },
         }
-        await updateOutcome(cleaned, outcomeActionHash)
+        await updateOutcome(cleaned, outcomeActionHash, ['targetDate'])
       }
     } else if (outcome.computedScope === ComputedScope.Big) {
       // Big
@@ -256,7 +260,7 @@ const EvDetails: React.FC<EvDetailsProps> = ({
   const onSelectNewTags = async (newSelectedTags: ActionHashB64[]) => {
     const newOutcome = cleanOutcome()
     newOutcome.tags = newSelectedTags
-    updateOutcome(newOutcome, outcomeActionHash)
+    updateOutcome(newOutcome, outcomeActionHash, ['tags'])
   }
 
   /* 
@@ -330,7 +334,7 @@ const EvDetails: React.FC<EvDetailsProps> = ({
               // the current persisted value
               githubLink={outcomeGithubLink}
               onSubmit={async () => {
-                await updateOutcomeWithLatest()
+                await updateOutcomeWithLatest(['githubLink'])
                 setIsEditingGithubLink(false)
               }}
               isEditing={isEditingGithubLink}

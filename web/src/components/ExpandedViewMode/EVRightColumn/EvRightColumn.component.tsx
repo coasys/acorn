@@ -52,7 +52,11 @@ export type EvRightColumnConnectorStateProps = {
 }
 
 export type EvRightColumnConnectorDispatchProps = {
-  updateOutcome: (outcome: Outcome, actionHash: ActionHashB64) => Promise<void>
+  updateOutcome: (
+    outcome: Outcome,
+    actionHash: ActionHashB64,
+    dirtyProps?: string[]
+  ) => Promise<void>
   updateProjectMeta: (
     projectMeta: ProjectMeta,
     actionHash: ActionHashB64
@@ -80,6 +84,19 @@ const defaultSmallScope: SmallScope = {
     targetDate: null,
   },
 }
+
+// every mount prop a scope write can carry: the scope switch replaces the
+// whole scope object, so all of them are declared (the update sends only
+// the ones the new entry actually emits)
+const SCOPE_DIRTY_PROPS = [
+  'scopeType',
+  'achievementStatus',
+  'targetDate',
+  'taskList',
+  'smallsEstimate',
+  'timeFrame',
+  'inBreakdown',
+]
 
 const EVRightColumn: React.FC<EvRightColumnProps> = ({
   // ownProps
@@ -153,7 +170,8 @@ const EVRightColumn: React.FC<EvRightColumnProps> = ({
           },
         },
       },
-      outcomeActionHash
+      outcomeActionHash,
+      ['achievementStatus']
     )
   }
 
@@ -179,7 +197,8 @@ const EVRightColumn: React.FC<EvRightColumnProps> = ({
         timestampUpdated: moment().unix(),
         scope,
       },
-      outcomeActionHash
+      outcomeActionHash,
+      SCOPE_DIRTY_PROPS
     )
   }
 
@@ -202,7 +221,8 @@ const EVRightColumn: React.FC<EvRightColumnProps> = ({
         timestampUpdated: moment().unix(),
         scope: { Uncertain: { inBreakdown, timeFrame, smallsEstimate } },
       },
-      outcomeActionHash
+      outcomeActionHash,
+      ['inBreakdown']
     )
   }
 
