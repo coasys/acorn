@@ -257,7 +257,212 @@ describe('zomeTable read rows', () => {
   test('unknown fn_name throws "not implemented yet"', async () => {
     const { call } = fakeRpc({})
     await expect(
-      dispatchZomeCall(call, cell, 'update_outcome', {})
+      dispatchZomeCall(call, cell, 'fetch_outcome_votes', {})
     ).rejects.toThrow('not implemented yet')
+  })
+})
+
+// ---- write rows (spec C2) ---------------------------------------------------
+
+function connInstance(id: string, parent: string, child: string, order = 0) {
+  return {
+    id: url(id),
+    __subjectClass: 'AcornConnection',
+    parent: url(parent),
+    child: url(child),
+    siblingOrder: order,
+    randomizer: 999,
+    isImported: false,
+    entryHash: 'e',
+    recordCreatedAt: 1,
+    recordUpdatedAt: 1,
+  }
+}
+
+const outcomeEntry = (over: any = {}) => ({
+  content: 'Stock outcome',
+  creatorAgentPubKey: AGENT_B64,
+  editorAgentPubKey: null,
+  timestampCreated: 1763370000.0,
+  timestampUpdated: null,
+  scope: {
+    Small: {
+      achievementStatus: 'NotAchieved',
+      targetDate: null,
+      taskList: [],
+    },
+  },
+  tags: [],
+  description: '',
+  isImported: false,
+  githubLink: '',
+  ...over,
+})
+
+/** fake rpc for writes: canned() supplies the CURRENT modelQuery rows (flip
+ *  it between calls to fake the post-delete state); createSubject pops the
+ *  next createdUrls entry as its URL result. */
+function fakeWriteRpc(opts: {
+  canned: () => Record<string, any[]>
+  createdUrls?: string[]
+  interact?: any
+  onRemove?: () => void
+}) {
+  const calls: { method: string; params: any }[] = []
+  const created = [...(opts.createdUrls ?? [])]
+  const call = jest.fn(async (method: string, params: any) => {
+    calls.push({ method, params })
+    if (method === 'perspective.modelQuery') {
+      const q = params.query_json ? JSON.parse(params.query_json) : {}
+      let rows = opts.canned()[params.class_name] ?? []
+      const wanted = q?.where?.id
+      if (wanted) rows = rows.filter((r) => r.id === wanted)
+      return { instances: rows }
+    }
+    if (method === 'perspective.createSubject') {
+      return created.length ? created.shift()! : url('created-hash')
+    }
+    if (method === 'perspective.updateSubject') return true
+    if (method === 'perspective.removeSubject') {
+      opts.onRemove?.()
+      return true
+    }
+    if (method === 'expression.interact') return opts.interact
+    throw new Error(`unexpected rpc ${method}`)
+  })
+  return { calls, call }
+}
+
+describe('zomeTable write rows', () => {
+  test('create_outcome_with_connection, ExistingOutcomeAsParent: one create with parent+siblingOrder', async () => {
+    const canned = {
+      AcornOutcome: [outcomeInstance('newout')],
+      AcornConnection: [connInstance('conn1', 'parent-o', 'newout', 4)],
+    }
+    const { calls, call } = fakeWriteRpc({
+      canned: () => canned,
+      createdUrls: [url('newout')],
+    })
+    const res = await dispatchZomeCall(
+      call,
+      cell,
+      'create_outcome_with_connection',
+      {
+        entry: outcomeEntry({ content: 'new child' }),
+        maybeLinkedOutcome: {
+          outcomeActionHash: 'parent-o',
+          relation: 'ExistingOutcomeAsParent',
+          siblingOrder: 4,
+        },
+      }
+    )
+    const creates = calls.filter(
+      (c) => c.method === 'perspective.createSubject'
+    )
+    expect(creates).toHaveLength(1)
+    expect(creates[0].params.subjectClass).toBe('AcornOutcome')
+    const values = JSON.parse(creates[0].params.initialValues)
+    expect(values.parent).toBe(url('parent-o'))
+    expect(values.siblingOrder).toBe(4)
+    expect(res.outcome.actionHash).toBe('newout')
+    expect(res.maybeConnection.actionHash).toBe('conn1')
+    expect(res.maybeConnection.entry.parentActionHash).toBe('parent-o')
+    expect(res.maybeConnection.entry.childActionHash).toBe('newout')
+  })
+
+  test('create_outcome_with_connection, ExistingOutcomeAsChild: outcome then connection', async () => {
+    const canned = {
+      AcornOutcome: [outcomeInstance('newout')],
+      AcornConnection: [connInstance('newconn', 'newout', 'existingchild', 7)],
+    }
+    const { calls, call } = fakeWriteRpc({
+      canned: () => canned,
+      createdUrls: [url('newout'), url('newconn')],
+    })
+    const res = await dispatchZomeCall(
+      call,
+      cell,
+      'create_outcome_with_connection',
+      {
+        entry: outcomeEntry({ content: 'new parent' }),
+        maybeLinkedOutcome: {
+          outcomeActionHash: 'existingchild',
+          relation: 'ExistingOutcomeAsChild',
+          siblingOrder: 7,
+        },
+      }
+    )
+    const creates = calls.filter(
+      (c) => c.method === 'perspective.createSubject'
+    )
+    expect(creates).toHaveLength(2)
+    expect(creates[0].params.subjectClass).toBe('AcornOutcome')
+    // the linked outcome is the CHILD: the outcome create carries no parent
+    const outcomeValues = JSON.parse(creates[0].params.initialValues)
+    expect(outcomeValues.parent).toBeUndefined()
+    expect(outcomeValues.siblingOrder).toBeUndefined()
+    expect(creates[1].params.subjectClass).toBe('AcornConnection')
+    const connValues = JSON.parse(creates[1].params.initialValues)
+    expect(connValues.parent).toBe(url('newout'))
+    expect(connValues.child).toBe(url('existingchild'))
+    expect(connValues.siblingOrder).toBe(7)
+    expect(res.outcome.actionHash).toBe('newout')
+    expect(res.maybeConnection.actionHash).toBe('newconn')
+  })
+
+  test('create_outcome_with_connection, no linked outcome: outcome only, maybeConnection null', async () => {
+    const { calls, call } = fakeWriteRpc({
+      canned: () => ({ AcornOutcome: [outcomeInstance('newout')] }),
+      createdUrls: [url('newout')],
+    })
+    const res = await dispatchZomeCall(
+      call,
+      cell,
+      'create_outcome_with_connection',
+      {
+        entry: outcomeEntry({ content: 'standalone' }),
+        maybeLinkedOutcome: null,
+      }
+    )
+    const creates = calls.filter(
+      (c) => c.method === 'perspective.createSubject'
+    )
+    expect(creates).toHaveLength(1)
+    expect(res.maybeConnection).toBeNull()
+  })
+
+  test('simple_create_project_meta: values carry no passphrase', async () => {
+    const { calls, call } = fakeWriteRpc({
+      canned: () => ({ AcornProjectMeta: [projectMetaInstance()] }),
+      createdUrls: [url('uhCkkTWV0YS')],
+    })
+    const res = await dispatchZomeCall(
+      call,
+      cell,
+      'simple_create_project_meta',
+      {
+        input: {
+          creatorAgentPubKey: AGENT_B64,
+          createdAt: 1763370001.0,
+          name: 'Fork Project',
+          image: null,
+          passphrase: 'alpha bravo charlie delta echo',
+          isImported: false,
+          layeringAlgorithm: 'LongestPath',
+          topPriorityOutcomes: [],
+          isMigrated: null,
+        },
+        local: true,
+      }
+    )
+    const creates = calls.filter(
+      (c) => c.method === 'perspective.createSubject'
+    )
+    expect(creates).toHaveLength(1)
+    expect(creates[0].params.subjectClass).toBe('AcornProjectMeta')
+    const values = JSON.parse(creates[0].params.initialValues)
+    expect(values.passphrase).toBeUndefined()
+    expect(values.name).toBe('Fork Project')
+    expect(res.actionHash).toBe('uhCkkTWV0YS')
   })
 })
