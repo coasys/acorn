@@ -296,3 +296,182 @@ describe('startLive', () => {
     expect(emitted.map(decodeSignal).map((d) => d.data.action)).toEqual(['delete'])
   })
 })
+
+// --- 4. init/resync races (Lal review Part 3: "live subscriptions can lose
+//    updates during initialization/resync") ------------------------------------
+//
+// A subscription id is registered before its request goes out, and frames
+// that land while the subscribe or a resync is in flight are buffered and
+// replayed against the snapshot that eventually arrives; a snapshot older
+// than the revision the stream already reached is rejected.
+describe('startLive init/resync buffering', () => {
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+
+  /** client whose responses resolve by hand while `defer()` says so */
+  function deferredClient() {
+    const calls: { method: string; params: any }[] = []
+    const listeners = new Set<(msg: any) => void>()
+    const emitted: any[] = []
+    const resolvers = new Map<string, (res: any) => void>()
+    const deferred = { modelSubscribe: true, resync: true }
+    const client: LiveClient = {
+      call: async (method: string, params: any) => {
+        calls.push({ method, params })
+        if (method === 'perspective.modelSubscribe') {
+          if (deferred.modelSubscribe) {
+            return new Promise((resolve) =>
+              resolvers.set(params.subscriptionId, resolve)
+            )
+          }
+          return {
+            subscriptionId: params.subscriptionId,
+            result: { instances: [], totalCount: 0 },
+            revision: 0,
+          }
+        }
+        if (method === 'perspective.resyncSubscription') {
+          if (deferred.resync) {
+            return new Promise((resolve) =>
+              resolvers.set(`resync:${params.subscriptionId}`, resolve)
+            )
+          }
+          return { revision: 0, result: { instances: [], totalCount: 0 } }
+        }
+        return true
+      },
+      onEvent: (cb) => {
+        listeners.add(cb)
+        return () => listeners.delete(cb)
+      },
+      emit: (s) => emitted.push(s),
+    }
+    const fire = (msg: any) => listeners.forEach((cb) => cb(msg))
+    return { client, calls, emitted, fire, resolvers, deferred }
+  }
+
+  it('a frame that lands before the subscribe response is buffered and replayed', async () => {
+    const a1 = outcomeInstance(OUTCOME_A)
+    const { client, calls, emitted, fire, resolvers, deferred } =
+      deferredClient()
+    const started = startLive(client, cell)
+    await tick()
+
+    const outcomeSub = calls.find(
+      (c) => c.params.class_name === 'AcornOutcome'
+    )!
+    // the update lands while the subscribe is still unanswered: it must not
+    // be dropped just because the subscription is not registered yet
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 1,
+      ids: [a1.id],
+      upsert: [a1],
+      totalCount: 1,
+    })
+    // the subscribe answers with an empty baseline at revision 0; the other
+    // classes' subscribes answer quietly so startLive can finish
+    deferred.modelSubscribe = false
+    resolvers.get(outcomeSub.params.subscriptionId)!({
+      subscriptionId: outcomeSub.params.subscriptionId,
+      result: { instances: [], totalCount: 0 },
+      revision: 0,
+    })
+    await started
+
+    // the buffered frame replays against the snapshot: one create for a1
+    const actions = emitted.map(decodeSignal).map((d) => [d.data.action, d.data.data.actionHash])
+    expect(actions).toEqual([['create', OUTCOME_A]])
+  })
+
+  it('frames during a resync replay on top of the resync snapshot', async () => {
+    const a1 = outcomeInstance(OUTCOME_A)
+    const b = outcomeInstance(OUTCOME_B, 'created late')
+    const { client, calls, emitted, fire, resolvers, deferred } =
+      deferredClient()
+    deferred.modelSubscribe = false
+    await startLive(client, cell)
+
+    const outcomeSub = calls.find(
+      (c) => c.params.class_name === 'AcornOutcome'
+    )!
+    // a revision gap opens a resync whose response we hold back
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 5,
+      ids: [],
+      upsert: [],
+    })
+    await tick()
+
+    // a newer frame lands while the resync is in flight
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 8,
+      ids: [a1.id, b.id],
+      upsert: [a1, b],
+      totalCount: 2,
+    })
+
+    // the resync snapshot catches only up to revision 7: a1 exists, b does not
+    resolvers.get(`resync:${outcomeSub.params.subscriptionId}`)!({
+      revision: 7,
+      result: { instances: [a1], totalCount: 1 },
+    })
+    await tick()
+
+    // snapshot applied (create a1), then the buffered frame on top (create b);
+    // without buffering, the frame applied first and the older snapshot then
+    // deleted b again
+    const actions = emitted
+      .map(decodeSignal)
+      .map((d) => [d.data.action, d.data.data.actionHash])
+    expect(actions).toEqual([
+      ['create', OUTCOME_A],
+      ['create', OUTCOME_B],
+    ])
+  })
+
+  it('a resync snapshot behind the applied revision is rejected', async () => {
+    const a1 = outcomeInstance(OUTCOME_A)
+    const { client, calls, emitted, fire, resolvers, deferred } =
+      deferredClient()
+    deferred.modelSubscribe = false
+    await startLive(client, cell)
+
+    const outcomeSub = calls.find(
+      (c) => c.params.class_name === 'AcornOutcome'
+    )!
+    // a live frame puts a1 at revision 1
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 1,
+      ids: [a1.id],
+      upsert: [a1],
+    })
+    expect(emitted).toHaveLength(1)
+
+    // a gap opens a resync; the snapshot it returns is already stale (empty,
+    // revision 1 — the stream has seen everything it covers)
+    fire({
+      type: 'query-subscription-update',
+      subscriptionId: outcomeSub.params.subscriptionId,
+      revision: 3,
+      ids: [],
+      upsert: [],
+    })
+    await tick()
+    resolvers.get(`resync:${outcomeSub.params.subscriptionId}`)!({
+      revision: 1,
+      result: { instances: [], totalCount: 0 },
+    })
+    await tick()
+
+    // a stale snapshot must not roll a1 back out: still exactly one signal
+    expect(emitted).toHaveLength(1)
+    expect(decodeSignal(emitted[0]).data.action).toBe('create')
+  })
+})

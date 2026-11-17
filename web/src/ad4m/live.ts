@@ -185,20 +185,35 @@ function toIdMap(instances: any[]): Map<string, any> {
 interface ClassSub {
   className: string
   subscriptionId: string
+  /** revision of the last applied frame or snapshot */
   revision: number
   /** id -> instance of the last result */
   last: Map<string, any>
+  /** the subscribe response has not been applied yet — frames buffer */
+  initializing: boolean
+  /** a resyncSubscription call is in flight — frames buffer */
+  resyncing: boolean
+  /** a lag/dropped event while busy: resync again once idle */
+  needResync: boolean
+  /** frames held while initializing or resyncing, replayed in order */
+  buffer: any[]
 }
 
 /** Open the live subscriptions of one mounted cell. Returns a handle whose
- *  stop() ends every subscription the cell opened. */
+ *  stop() ends every subscription the cell opened.
+ *
+ *  Updates can reach the socket before their subscription is registered here
+ *  (a frame outruns its modelSubscribe response) or while a resync is in
+ *  flight. Those frames are buffered on the subscription — which is
+ *  registered before its request goes out — and replayed in order on top of
+ *  the snapshot that arrives. A snapshot at or behind the revision the stream
+ *  already reached is stale and gets rejected instead of rolling state back. */
 export async function startLive(
   client: LiveClient,
   cell: LiveCell
 ): Promise<LiveHandle> {
   const subs = new Map<string, ClassSub>()
   let disposed = false
-  let resyncing = new Set<string>()
 
   const emitChange = (className: string, change: InstanceChange) => {
     try {
@@ -222,25 +237,6 @@ export async function startLive(
     sub.last = next
   }
 
-  /** Revision gap, lagged stream, or a delta we cannot apply: pull the
-   *  subscription's whole current result and diff against it. */
-  const resync = (sub: ClassSub) => {
-    if (resyncing.has(sub.subscriptionId)) return
-    resyncing.add(sub.subscriptionId)
-    client
-      .call('perspective.resyncSubscription', {
-        uuid: cell.uuid,
-        subscriptionId: sub.subscriptionId,
-      })
-      .then((res) => {
-        resyncing.delete(sub.subscriptionId)
-        if (disposed || !subs.has(sub.subscriptionId)) return
-        sub.revision = res?.revision ?? sub.revision
-        replace(sub, instancesOf(res?.result))
-      })
-      .catch(() => resyncing.delete(sub.subscriptionId))
-  }
-
   const onFrame = (msg: any) => {
     if (disposed || msg?.type !== 'query-subscription-update') return
     if (msg.lagged) {
@@ -249,6 +245,64 @@ export async function startLive(
     }
     const sub = subs.get(msg.subscriptionId)
     if (!sub) return
+    if (sub.initializing || sub.resyncing) {
+      // a snapshot is on its way; hold the frame until it lands
+      sub.buffer.push(msg)
+      return
+    }
+    applyFrame(sub, msg)
+  }
+
+  /** Replay the frames buffered while `sub` was busy, through the normal
+   *  path (busy flags are re-checked, so a frame that opens another resync
+   *  re-buffers the rest). */
+  const drain = (sub: ClassSub) => {
+    const buffered = sub.buffer
+    sub.buffer = []
+    for (const m of buffered) onFrame(m)
+  }
+
+  /** Revision gap, lagged stream, or a delta we cannot apply: pull the
+   *  subscription's whole current result and diff against it. */
+  const resync = (sub: ClassSub) => {
+    if (sub.initializing || sub.resyncing) {
+      sub.needResync = true
+      return
+    }
+    sub.resyncing = true
+    client
+      .call('perspective.resyncSubscription', {
+        uuid: cell.uuid,
+        subscriptionId: sub.subscriptionId,
+      })
+      .then((res) => {
+        sub.resyncing = false
+        if (disposed || !subs.has(sub.subscriptionId)) return
+        if (
+          typeof res?.revision === 'number' &&
+          res.revision <= sub.revision
+        ) {
+          // superseded snapshot: the stream already moved past it
+        } else {
+          sub.revision =
+            typeof res?.revision === 'number' ? res.revision : sub.revision
+          replace(sub, instancesOf(res?.result))
+        }
+        drain(sub)
+        if (sub.needResync) {
+          sub.needResync = false
+          resync(sub)
+        }
+      })
+      .catch(() => {
+        sub.resyncing = false
+        // the resync failed; let the buffered frames through so the next
+        // delta or gap retries against them instead of stalling
+        drain(sub)
+      })
+  }
+
+  const applyFrame = (sub: ClassSub, msg: any) => {
     if (typeof msg.revision === 'number') {
       if (msg.revision <= sub.revision) return
       if (msg.revision !== sub.revision + 1) {
@@ -291,6 +345,19 @@ export async function startLive(
   for (const className of LIVE_CLASSES) {
     if (disposed) break
     const subscriptionId = mintSubscriptionId()
+    // the id is registered before the request: frames that outrun the
+    // response buffer on the subscription instead of being dropped
+    const sub: ClassSub = {
+      className,
+      subscriptionId,
+      revision: -1,
+      last: new Map(),
+      initializing: true,
+      resyncing: false,
+      needResync: false,
+      buffer: [],
+    }
+    subs.set(subscriptionId, sub)
     try {
       const res = await client.call(
         'perspective.modelSubscribe',
@@ -298,18 +365,22 @@ export async function startLive(
         180000
       )
       if (disposed) {
+        subs.delete(subscriptionId)
         client
           .call('perspective.disposeQuery', { uuid: cell.uuid, subscriptionId })
           .catch(() => {})
         break
       }
-      subs.set(subscriptionId, {
-        className,
-        subscriptionId,
-        revision: typeof res?.revision === 'number' ? res.revision : 0,
-        last: toIdMap(instancesOf(res?.result)),
-      })
+      sub.revision = typeof res?.revision === 'number' ? res.revision : 0
+      sub.last = toIdMap(instancesOf(res?.result))
+      sub.initializing = false
+      drain(sub)
+      if (sub.needResync) {
+        sub.needResync = false
+        resync(sub)
+      }
     } catch (e) {
+      subs.delete(subscriptionId)
       console.error(`AD4M live: modelSubscribe ${className} failed`, e)
     }
   }
