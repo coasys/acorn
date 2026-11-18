@@ -308,6 +308,7 @@ export type TagPickerProps = {
     backgroundColor: string
   ) => Promise<void>
   onClose: () => void
+  isOpen: boolean
 }
 
 const TagPicker: React.FC<TagPickerProps> = ({
@@ -319,6 +320,7 @@ const TagPicker: React.FC<TagPickerProps> = ({
   onCreateTag,
   onUpdateExistingTag,
   onClose,
+  isOpen,
 }) => {
   // if there aren't any tags, then it should
   // be open to the create tag panel by default
@@ -328,6 +330,18 @@ const TagPicker: React.FC<TagPickerProps> = ({
 
   // existing tag ID that is being edited
   const [editingTagID, setEditingTagID] = useState('')
+
+  /* The parent keeps this picker mounted (hidden) once opened so a pending
+     selection survives close/reopen — but that means the rest of its
+     state survives too. Reset the create/edit panel on close so a reopen
+     shows what a freshly mounted picker would: the tag list, or the
+     create form when there are no tags yet. */
+  useEffect(() => {
+    if (!isOpen) {
+      setIsCreateOrEditTagOpen(!tags.length)
+      setEditingTagID('')
+    }
+  }, [isOpen, tags.length])
 
   /* A selection can outpace its prop: an onChange's write comes back as a
      new selectedTags only after the save round-trips. Until it does, the

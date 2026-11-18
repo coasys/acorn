@@ -89,6 +89,7 @@ const args: TagPickerProps = {
   onClose: function (): void {
     throw new Error('Function not implemented.')
   },
+  isOpen: true,
 }
 
 TagPicker.args = args

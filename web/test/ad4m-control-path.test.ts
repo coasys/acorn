@@ -1010,6 +1010,47 @@ describe('expanded-view controls through the real connector', () => {
     ).toBe(true)
   })
 
+  it('reopening the picker after closing on the edit form shows the tag list', async () => {
+    const world = makeWorld(outcomeInstance({ tags: [] }))
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+
+    const { tree } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    // open a tag's edit form, then close the picker with the form open:
+    // TagsList keeps the picker mounted hidden, so without a reset the
+    // abandoned form is what a reopen shows
+    const editButton = findByClass(
+      renderer!.root,
+      'tag-picker-edit-button'
+    )[0]
+    await act(async () => {
+      editButton.props.onClick()
+    })
+    expect(
+      findByClass(renderer!.root, 'create-or-edit-tag-wrapper').length
+    ).toBe(1)
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+
+    expect(
+      findByClass(renderer!.root, 'create-or-edit-tag-wrapper').length
+    ).toBe(0)
+    expect(tagPickerRows(renderer!.root).length).toBe(3)
+  })
+
   it('switching the outcome does not leak a pending selection', async () => {
     const world = makeWorld(outcomeInstance({ tags: [] }))
     ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
