@@ -23,6 +23,7 @@ import moment from 'moment'
 import { DateRangePicker } from 'react-dates'
 import { Ad4mAppClient } from '../src/ad4m/Ad4mAppClient'
 import { CellCtx } from '../src/ad4m/zomeTable'
+import { urlToHash } from '../src/ad4m/mapping'
 import { agentToDid } from '../src/ad4m/agent'
 import { socketSurface } from '../src/ad4m/rpc'
 import { cellIdToString } from '../src/utils'
@@ -113,6 +114,25 @@ const LANG = 'acornlang-ctl'
 const OUTCOME_HASH = 'oCtl'
 const GITHUB_LINK = 'https://github.com/acorn-o/acorn-r/issues/3'
 const RANGE = { fromDate: 1790000000, toDate: 1791000000 }
+// the project tag options the picker's rows are built from
+const TAG_A = {
+  actionHash: 'tagCtlA',
+  text: 'Alpha',
+  backgroundColor: '#1DA094',
+}
+const TAG_B = {
+  actionHash: 'tagCtlB',
+  text: 'Beta',
+  backgroundColor: '#103BB1',
+}
+const TAG_C = {
+  actionHash: 'tagCtlC',
+  text: 'Gamma',
+  backgroundColor: '#A0871D',
+}
+const tagUrl = (hash: string) => `${LANG}://${hash}`
+const sameSet = (a: any[], b: any[]) =>
+  a.length === b.length && a.every((x) => b.includes(x))
 
 /** the mount-data shape perspective.modelQuery returns for the outcome */
 const outcomeInstance = (over: any = {}) => ({
@@ -135,7 +155,7 @@ const outcomeInstance = (over: any = {}) => ({
 })
 
 /** the ComputedOutcome the real ProjectView would hand the connector */
-const computedOutcome = (inst: any) => {
+const computedOutcome = (inst: any, hash: string = OUTCOME_HASH) => {
   const scope =
     inst.scopeType === 'Small'
       ? {
@@ -153,14 +173,14 @@ const computedOutcome = (inst: any) => {
           },
         }
   return {
-    actionHash: OUTCOME_HASH,
+    actionHash: hash,
     content: inst.content,
     creatorAgentPubKey: AGENT_B64,
     editorAgentPubKey: null,
     timestampCreated: inst.timestampCreated,
     timestampUpdated: null,
     scope,
-    tags: [],
+    tags: (inst.tags ?? []).map((t: string) => urlToHash(t, LANG)),
     description: inst.description,
     isImported: false,
     githubLink: inst.githubLink,
@@ -179,23 +199,34 @@ const computedOutcome = (inst: any) => {
 }
 
 const makeStore = () =>
-  createStore((s: any) => s, {
-    agentAddress: AGENT_B64,
-    projects: {
-      outcomeComments: { [PROJECT_ID]: {} },
-      outcomeMembers: { [PROJECT_ID]: {} },
-      tags: { [PROJECT_ID]: {} },
-      members: { [PROJECT_ID]: { members: {}, profiles: [] } },
-      entryPoints: { [PROJECT_ID]: {} },
-      projectMeta: { [PROJECT_ID]: { topPriorityOutcomes: [] } },
-    },
-    ui: {
-      activeProject: PROJECT_ID,
-      realtimeInfo: {},
-      expandedView: { outcomeActionHash: OUTCOME_HASH },
-      outcomeEditing: {},
-    },
-  } as any)
+  createStore(
+    // '@@test/set-state' moves the static state for tests that navigate
+    // (e.g. the expanded view switching to another outcome)
+    (s: any, a: any) => (a?.type === '@@test/set-state' ? a.state : s),
+    {
+      agentAddress: AGENT_B64,
+      projects: {
+        outcomeComments: { [PROJECT_ID]: {} },
+        outcomeMembers: { [PROJECT_ID]: {} },
+        tags: {
+          [PROJECT_ID]: {
+            [TAG_A.actionHash]: TAG_A,
+            [TAG_B.actionHash]: TAG_B,
+            [TAG_C.actionHash]: TAG_C,
+          },
+        },
+        members: { [PROJECT_ID]: { members: {}, profiles: [] } },
+        entryPoints: { [PROJECT_ID]: {} },
+        projectMeta: { [PROJECT_ID]: { topPriorityOutcomes: [] } },
+      },
+      ui: {
+        activeProject: PROJECT_ID,
+        realtimeInfo: {},
+        expandedView: { outcomeActionHash: OUTCOME_HASH },
+        outcomeEditing: {},
+      },
+    } as any
+  )
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
@@ -205,6 +236,13 @@ const makeWorld = (initialInstance: any) => {
   const transport = { readyState: 1 /* OPEN */ }
   const calls: { method: string; params: any }[] = []
   let current: any = initialInstance
+  // a manual gate on perspective.updateSubject: while held, submissions are
+  // recorded but the write neither applies to the mount data nor resolves,
+  // modelling a write round trip the user can out-click. Released in
+  // submission order — the picker does not promise ordering against a
+  // transport that commits writes out of order
+  let holdUpdates = false
+  const heldUpdates: { release: () => void }[] = []
   const cellCtx: CellCtx = {
     uuid: 'persp-uuid-ctl',
     lang: LANG,
@@ -226,10 +264,16 @@ const makeWorld = (initialInstance: any) => {
         return { instances: rows }
       }
       if (method === 'perspective.updateSubject') {
-        if (current?.id === params.expressionAddress) {
-          Object.assign(current, JSON.parse(params.values))
+        const apply = () => {
+          if (current?.id === params.expressionAddress) {
+            Object.assign(current, JSON.parse(params.values))
+          }
+          return true
         }
-        return true
+        if (!holdUpdates) return apply()
+        return new Promise((resolve) => {
+          heldUpdates.push({ release: () => resolve(apply()) })
+        })
       }
       if (method === 'expression.interact') return null
       throw new Error(`unexpected rpc ${method}`)
@@ -264,6 +308,24 @@ const makeWorld = (initialInstance: any) => {
     fetch,
     openPresence,
     updateValues,
+    holdUpdateWrites: () => {
+      holdUpdates = true
+    },
+    heldUpdateCount: () => heldUpdates.length,
+    releaseNextUpdate: () => heldUpdates.shift()?.release(),
+    // drain the gate AND the writes queued behind it in callZome's
+    // per-cell write queue: each release lets the next queued submission
+    // reach the gate, so loop until two ticks see nothing new
+    settleWrites: async () => {
+      for (let i = 0; i < 20; i++) {
+        while (heldUpdates.length) heldUpdates.shift()!.release()
+        await new Promise((r) => setTimeout(r, 0))
+        if (!heldUpdates.length) {
+          await new Promise((r) => setTimeout(r, 0))
+          if (!heldUpdates.length) return
+        }
+      }
+    },
     setRemote: (inst: any) => {
       current = inst
     },
@@ -321,15 +383,35 @@ const findByClass = (root: any, klass: string) =>
       n.props.className.split(' ')[0] === klass
   )
 
+/** the picker's tag rows, identified by the option text their Tag shows */
+const tagPickerRows = (root: any) =>
+  findByClass(root, 'tag-picker-selectable-area')
+const tagRowFor = (root: any, text: string) =>
+  tagPickerRows(root).find(
+    (r: any) =>
+      r.findAll((n: any) => n.props && n.props.text === text).length > 0
+  )
+const addTagButton = (root: any) =>
+  findByClass(root, 'add-tag-button')[0]
+
 describe('expanded-view controls through the real connector', () => {
   let renderer: TestRenderer.ReactTestRenderer | undefined
+  let activeWorld: any = null
 
   beforeEach(() => {
     jest.clearAllMocks()
     for (const k of Object.keys(docListeners)) delete docListeners[k]
+    activeWorld = null
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // a held write never released stalls the per-cell write queue for the
+    // next test — drain the gate even when the test failed mid-assertion
+    if (activeWorld) {
+      await act(async () => {
+        await activeWorld.settleWrites()
+      })
+    }
     renderer?.unmount()
     renderer = undefined
   })
@@ -550,5 +632,383 @@ describe('expanded-view controls through the real connector', () => {
     expect(
       updates.some((v) => v.achievementStatus === 'NotAchieved')
     ).toBe(true)
+  })
+
+  it('two tag toggles in one write round trip keep both selections', async () => {
+    const world = makeWorld(outcomeInstance({ tags: [] }))
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+    world.holdUpdateWrites()
+    activeWorld = world
+
+    const { tree, declared } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    const rowA = tagRowFor(renderer!.root, TAG_A.text)!
+    const rowB = tagRowFor(renderer!.root, TAG_B.text)!
+
+    // both toggles inside the same synchronous act: no rerender and no RPC
+    // resolution between them — the second click must still see the first.
+    // callZome serializes a cell's writes, so the second updateSubject
+    // submits only after the first resolves; the submissions still record
+    // in click order at the gate
+    await act(async () => {
+      rowA.props.onClick()
+      rowB.props.onClick()
+    })
+    await act(async () => flush())
+
+    expect(declared.length).toBe(2)
+    expect(declared.every((d) => (d ?? []).includes('tags'))).toBe(true)
+    let tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(1)
+    expect(world.heldUpdateCount()).toBe(1)
+    expect(sameSet(tagWrites[0].tags, [tagUrl(TAG_A.actionHash)])).toBe(true)
+
+    // release the first write; the queued second submission reaches the gate
+    await act(async () => {
+      world.releaseNextUpdate()
+      await flush()
+    })
+    tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(2)
+    expect(
+      sameSet(tagWrites[1].tags, [
+        tagUrl(TAG_A.actionHash),
+        tagUrl(TAG_B.actionHash),
+      ])
+    ).toBe(true)
+
+    // release the second; the last write persists both tags
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+    expect(
+      sameSet(world.current.tags, [
+        tagUrl(TAG_A.actionHash),
+        tagUrl(TAG_B.actionHash),
+      ])
+    ).toBe(true)
+
+    // props catching up to the last submission issues no third write
+    await act(async () => {
+      renderer!.update(tree(computedOutcome(world.current)))
+    })
+    await act(async () => flush())
+    expect(world.updateValues().filter((v) => 'tags' in v).length).toBe(2)
+  })
+
+  it('a remove then re-add of the same tag submits the revert as dirty', async () => {
+    const world = makeWorld(
+      outcomeInstance({ tags: [tagUrl(TAG_A.actionHash)] })
+    )
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+    world.holdUpdateWrites()
+    activeWorld = world
+
+    const { tree, declared } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    const rowA = tagRowFor(renderer!.root, TAG_A.text)!
+
+    // uncheck A then check A again inside one act: the second click must
+    // toggle from the first click's list, not from the rendered [A]
+    await act(async () => {
+      rowA.props.onClick()
+      rowA.props.onClick()
+    })
+    await act(async () => flush())
+
+    expect(declared.length).toBe(2)
+    let tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(1)
+    expect(tagWrites[0].tags.length).toBe(0)
+
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+    tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(2)
+    expect(sameSet(tagWrites[1].tags, [tagUrl(TAG_A.actionHash)])).toBe(true)
+    // the final list equals what the props showed, but the user DID change
+    // the selection from its immediately-preceding visible state — the
+    // revert must still be declared so the baseline diff does not drop it
+    expect(declared.every((d) => (d ?? []).includes('tags'))).toBe(true)
+    expect(sameSet(world.current.tags, [tagUrl(TAG_A.actionHash)])).toBe(true)
+  })
+
+  it('an add then remove of the same tag submits an explicit clear', async () => {
+    const world = makeWorld(outcomeInstance({ tags: [] }))
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+    world.holdUpdateWrites()
+    activeWorld = world
+
+    const { tree, declared } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    const rowA = tagRowFor(renderer!.root, TAG_A.text)!
+
+    await act(async () => {
+      rowA.props.onClick()
+      rowA.props.onClick()
+    })
+    await act(async () => flush())
+
+    expect(declared.length).toBe(2)
+    let tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(1)
+    expect(sameSet(tagWrites[0].tags, [tagUrl(TAG_A.actionHash)])).toBe(true)
+
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+    tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(2)
+    // the empty final list is a real edit and goes out declared
+    expect('tags' in tagWrites[1] && tagWrites[1].tags.length === 0).toBe(true)
+    expect(declared.every((d) => (d ?? []).includes('tags'))).toBe(true)
+    expect(sameSet(world.current.tags, [])).toBe(true)
+  })
+
+  it('a peer change while pending resets the next toggle to the peer list', async () => {
+    const world = makeWorld(outcomeInstance({ tags: [] }))
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+    world.holdUpdateWrites()
+    activeWorld = world
+
+    const { tree } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_A.text)!.props.onClick()
+    })
+    await act(async () => flush())
+
+    // a content-different prop list lands while our write is still out:
+    // pending resets and the next toggle starts from the peer list
+    const peerInst = outcomeInstance({ tags: [tagUrl(TAG_C.actionHash)] })
+    world.setRemote(peerInst)
+    await world.fetch()
+    await act(async () => {
+      renderer!.update(tree(computedOutcome(peerInst)))
+    })
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_B.text)!.props.onClick()
+    })
+    await act(async () => flush())
+
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+    const tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(2)
+    expect(sameSet(tagWrites[0].tags, [tagUrl(TAG_A.actionHash)])).toBe(true)
+    expect(
+      sameSet(tagWrites[1].tags, [
+        tagUrl(TAG_C.actionHash),
+        tagUrl(TAG_B.actionHash),
+      ])
+    ).toBe(true)
+  })
+
+  it('an unchanged-content rerender retains the pending selection', async () => {
+    const world = makeWorld(outcomeInstance({ tags: [] }))
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+    world.holdUpdateWrites()
+    activeWorld = world
+
+    const { tree } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_A.text)!.props.onClick()
+    })
+    await act(async () => flush())
+
+    // an unrelated rerender with a fresh [] array must not drop the
+    // pending selection — contents, not identity, decide
+    await act(async () => {
+      renderer!.update(tree(computedOutcome(world.current)))
+    })
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_B.text)!.props.onClick()
+    })
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+
+    const tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(2)
+    expect(
+      sameSet(tagWrites[1].tags, [
+        tagUrl(TAG_A.actionHash),
+        tagUrl(TAG_B.actionHash),
+      ])
+    ).toBe(true)
+  })
+
+  it('close and reopen before catch-up retains the pending selection', async () => {
+    const world = makeWorld(outcomeInstance({ tags: [] }))
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+    world.holdUpdateWrites()
+    activeWorld = world
+
+    const { tree } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_A.text)!.props.onClick()
+    })
+    await act(async () => flush())
+
+    // close, then reopen before the write resolves: the pending selection
+    // survives on the still-mounted picker, and nothing resends
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    await act(async () => flush())
+    expect(world.updateValues().filter((v) => 'tags' in v).length).toBe(1)
+
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_B.text)!.props.onClick()
+    })
+    await act(async () => flush())
+    // the second submission is queued behind the first, still held
+    expect(world.updateValues().filter((v) => 'tags' in v).length).toBe(1)
+
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+    const tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(2)
+    expect(
+      sameSet(tagWrites[1].tags, [
+        tagUrl(TAG_A.actionHash),
+        tagUrl(TAG_B.actionHash),
+      ])
+    ).toBe(true)
+  })
+
+  it('switching the outcome does not leak a pending selection', async () => {
+    const world = makeWorld(outcomeInstance({ tags: [] }))
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+    world.holdUpdateWrites()
+    activeWorld = world
+
+    const { store, tree } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_A.text)!.props.onClick()
+    })
+    await act(async () => flush())
+    expect(world.updateValues().filter((v) => 'tags' in v).length).toBe(1)
+
+    // let the first write land while the view still names this outcome,
+    // then move the expanded view to another outcome: its picker owns a
+    // fresh selection, and the old outcome's pending list must not leak in
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+    const otherHash = 'oCtl2'
+    const otherInst = outcomeInstance({
+      id: tagUrl(otherHash),
+      tags: [],
+    })
+    world.setRemote(otherInst)
+    await world.fetch()
+    const nextState = {
+      ...store.getState(),
+      ui: {
+        ...store.getState().ui,
+        expandedView: { outcomeActionHash: otherHash },
+      },
+    }
+    await act(async () => {
+      store.dispatch({ type: '@@test/set-state', state: nextState })
+      renderer!.update(tree(computedOutcome(otherInst, otherHash)))
+    })
+
+    // a keyed TagsList remounts closed for the new outcome; open it first
+    if (!tagPickerRows(renderer!.root).length) {
+      await act(async () => {
+        addTagButton(renderer!.root).props.onClick()
+      })
+    }
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_B.text)!.props.onClick()
+    })
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+
+    const tagCalls = world.calls.filter(
+      (c) =>
+        c.method === 'perspective.updateSubject' &&
+        'tags' in JSON.parse(c.params.values)
+    )
+    expect(tagCalls.length).toBe(2)
+    expect(tagCalls[1].params.expressionAddress).toBe(tagUrl(otherHash))
+    const secondValues = JSON.parse(tagCalls[1].params.values)
+    expect(sameSet(secondValues.tags, [tagUrl(TAG_B.actionHash)])).toBe(true)
   })
 })

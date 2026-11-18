@@ -11,7 +11,10 @@ import OnClickOutside from '../OnClickOutside/OnClickOutside'
 export type TagsListProps = {
   tags: WithActionHash<TagType>[]
   selectedTags: ActionHashB64[]
-  onChange?: (newSelectedTags: ActionHashB64[]) => void
+  onChange?: (
+    newSelectedTags: ActionHashB64[],
+    previousSelectedTags?: ActionHashB64[]
+  ) => void
   onCreateTag?: (text: string, backgroundColor: string) => Promise<void>
   onUpdateExistingTag?: (
     actionHash: ActionHashB64,
@@ -30,6 +33,10 @@ const TagsList: React.FC<TagsListProps> = ({
   showAddTagButton,
 }) => {
   const [isOpenTagPicker, setIsOpenTagPicker] = useState(false)
+  // once the picker has opened, keep that instance mounted (hidden when
+  // closed) so a selection submitted but not yet written back survives a
+  // close/reopen inside the same TagsList
+  const [hasOpenedTagPicker, setHasOpenedTagPicker] = useState(false)
   const [filterText, setFilterText] = useState('')
   const onClose = () => {
     setIsOpenTagPicker(false)
@@ -44,6 +51,7 @@ const TagsList: React.FC<TagsListProps> = ({
             <div
               className={`add-tag-button ${isOpenTagPicker ? 'active' : ''}`}
               onClick={() => {
+                setHasOpenedTagPicker(true)
                 setIsOpenTagPicker(!isOpenTagPicker)
                 setFilterText('')
               }}
@@ -57,17 +65,19 @@ const TagsList: React.FC<TagsListProps> = ({
               {selectedTags.length === 0 && <span>Add a tag</span>}
               {selectedTags.length > 0 && <span></span>}
             </div>
-            {isOpenTagPicker && (
-              <TagPicker
-                tags={tags}
-                selectedTags={selectedTags}
-                onChange={onChange}
-                onCreateTag={onCreateTag}
-                onUpdateExistingTag={onUpdateExistingTag}
-                filterText={filterText}
-                setFilterText={setFilterText}
-                onClose={onClose}
-              />
+            {hasOpenedTagPicker && (
+              <div hidden={!isOpenTagPicker}>
+                <TagPicker
+                  tags={tags}
+                  selectedTags={selectedTags}
+                  onChange={onChange}
+                  onCreateTag={onCreateTag}
+                  onUpdateExistingTag={onUpdateExistingTag}
+                  filterText={filterText}
+                  setFilterText={setFilterText}
+                  onClose={onClose}
+                />
+              </div>
             )}
           </div>
         )}

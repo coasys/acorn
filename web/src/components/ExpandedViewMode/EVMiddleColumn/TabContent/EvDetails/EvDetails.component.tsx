@@ -271,12 +271,18 @@ const EvDetails: React.FC<EvDetailsProps> = ({
     TAGS
   */
   const selectedTags = outcome ? outcome.tags : []
-  const onSelectNewTags = async (newSelectedTags: ActionHashB64[]) => {
+  // the picker reports the selection the click actually started from, so a
+  // revert to the persisted props is still declared when it differs from
+  // the selection the user last saw
+  const onSelectNewTags = async (
+    newSelectedTags: ActionHashB64[],
+    previousSelectedTags: ActionHashB64[] = selectedTags
+  ) => {
     const newOutcome = cleanOutcome()
     newOutcome.tags = newSelectedTags
     const changed =
-      newSelectedTags.length !== selectedTags.length ||
-      newSelectedTags.some((hash) => !selectedTags.includes(hash))
+      newSelectedTags.length !== previousSelectedTags.length ||
+      newSelectedTags.some((hash) => !previousSelectedTags.includes(hash))
     updateOutcome(
       newOutcome,
       outcomeActionHash,
@@ -375,6 +381,7 @@ const EvDetails: React.FC<EvDetailsProps> = ({
           {/* Tags */}
           <div className="ev-tags">
             <TagsList
+              key={outcomeActionHash}
               tags={projectTags}
               showAddTagButton={true}
               selectedTags={selectedTags}

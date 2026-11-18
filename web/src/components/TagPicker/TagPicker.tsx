@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ActionHashB64, WithActionHash } from '../../types/shared'
 import { Tag as TagType } from '../../types'
 import Button from '../Button/Button'
@@ -12,10 +12,14 @@ import './TagPicker.scss'
 // @ts-ignore
 import PopupTriangleWhite from '../../images/popup-triangle-white.svg'
 
+/** a tag selection is a set: order and array identity do not matter */
+const sameTagSet = (a: ActionHashB64[], b: ActionHashB64[]) =>
+  a.length === b.length && a.every((hash) => b.includes(hash))
+
 export type TagPickerDisplayTagsProps = {
   tags: WithActionHash<TagType>[]
   selectedTags: ActionHashB64[]
-  onChange: (newSelectedTags: ActionHashB64[]) => void
+  onToggleTag: (actionHash: ActionHashB64) => void
   filterText: string
   setFilterText: (text: string) => void
   setIsCreateOrEditTagOpen: React.Dispatch<React.SetStateAction<boolean>>
@@ -25,7 +29,7 @@ export type TagPickerDisplayTagsProps = {
 const TagPickerDisplayTags: React.FC<TagPickerDisplayTagsProps> = ({
   tags,
   selectedTags,
-  onChange,
+  onToggleTag,
   filterText,
   setFilterText,
   setIsCreateOrEditTagOpen,
@@ -74,24 +78,11 @@ const TagPickerDisplayTags: React.FC<TagPickerDisplayTagsProps> = ({
           })
           .map((tag) => {
             const isChecked = selectedTags.includes(tag.actionHash)
-            const onSelectOption = (isChecked: boolean) => {
-              if (isChecked && !selectedTags.includes(tag.actionHash)) {
-                // add it, since its not there
-                onChange([...selectedTags, tag.actionHash])
-              } else if (!isChecked && selectedTags.includes(tag.actionHash)) {
-                // remove it, since its there and shouldn't be
-                onChange(
-                  selectedTags.filter(
-                    (actionHash) => actionHash !== tag.actionHash
-                  )
-                )
-              }
-            }
             return (
               <div key={tag.actionHash} className="tag-picker-tag-option">
                 <div
                   className="tag-picker-selectable-area"
-                  onClick={() => onSelectOption(!isChecked)}
+                  onClick={() => onToggleTag(tag.actionHash)}
                 >
                   <Checkbox size="small" isChecked={isChecked} />
                   <Tag text={tag.text} backgroundColor={tag.backgroundColor} />
@@ -304,7 +295,10 @@ TagPicker default export Component
 export type TagPickerProps = {
   tags: WithActionHash<TagType>[]
   selectedTags: ActionHashB64[]
-  onChange: (newSelectedTags: ActionHashB64[]) => void
+  onChange: (
+    newSelectedTags: ActionHashB64[],
+    previousSelectedTags?: ActionHashB64[]
+  ) => void
   filterText: string
   setFilterText: (text: string) => void
   onCreateTag: (text: string, backgroundColor: string) => Promise<void>
@@ -335,6 +329,56 @@ const TagPicker: React.FC<TagPickerProps> = ({
   // existing tag ID that is being edited
   const [editingTagID, setEditingTagID] = useState('')
 
+  /* A selection can outpace its prop: an onChange's write comes back as a
+     new selectedTags only after the save round-trips. Until it does, the
+     next toggle must build on the last submitted list, not the rendered
+     one — otherwise two clicks inside one round trip lose the first. The
+     ref is the event-order authority (two callbacks inside one batched
+     render cannot both read a state update); pendingList mirrors it so
+     optimistic checkmarks render. */
+  const selectionRef = useRef<{
+    lastProps: ActionHashB64[]
+    pending: ActionHashB64[] | null
+  } | null>(null)
+  if (selectionRef.current === null) {
+    selectionRef.current = { lastProps: [...selectedTags], pending: null }
+  }
+  const selection = selectionRef.current
+  const [pendingList, setPendingList] = useState<ActionHashB64[] | null>(null)
+
+  /* Reconcile the ref with the rendered props: pending lives only while
+     the props still show the pre-submission list. A prop list whose
+     contents moved is either the submission catching up or an
+     authoritative peer list — pending clears either way; an identical set
+     on a new array, or an unrelated rerender, retains it. */
+  const reconcileProps = (props: ActionHashB64[]) => {
+    if (sameTagSet(props, selection.lastProps)) return
+    selection.lastProps = [...props]
+    if (selection.pending !== null) {
+      selection.pending = null
+      setPendingList(null)
+    }
+  }
+  useLayoutEffect(() => {
+    reconcileProps(selectedTags)
+  })
+
+  const onToggleTag = (actionHash: ActionHashB64) => {
+    // reconcile here too, so a props update React committed but whose
+    // effect has not run yet cannot leave a stale pending list behind
+    reconcileProps(selectedTags)
+    const base = selection.pending ?? selectedTags
+    const next = base.includes(actionHash)
+      ? base.filter((hash) => hash !== actionHash)
+      : [...base, actionHash]
+    // a no-op selection submits nothing
+    if (sameTagSet(next, base)) return
+    selection.pending = next
+    setPendingList([...next])
+    onChange([...next], [...base])
+  }
+  const effectiveSelectedTags = pendingList ?? selectedTags
+
   const onClickSaveTag = async (text: string, backgroundColor: string) => {
     if (editingTagID) {
       // if updating a tag
@@ -359,9 +403,9 @@ const TagPicker: React.FC<TagPickerProps> = ({
       {!isCreateOrEditTagOpen && (
         <TagPickerDisplayTags
           tags={tags}
-          selectedTags={selectedTags}
+          selectedTags={effectiveSelectedTags}
           setEditingTagID={setEditingTagID}
-          onChange={onChange}
+          onToggleTag={onToggleTag}
           filterText={filterText}
           setFilterText={setFilterText}
           setIsCreateOrEditTagOpen={setIsCreateOrEditTagOpen}
