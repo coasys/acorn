@@ -705,6 +705,77 @@ describe('expanded-view controls through the real connector', () => {
     expect(world.updateValues().filter((v) => 'tags' in v).length).toBe(2)
   })
 
+  it('an intermediate echo keeps pending, so a third toggle keeps all three', async () => {
+    const world = makeWorld(outcomeInstance({ tags: [] }))
+    ;(getAppWs as jest.Mock).mockResolvedValue(world.client)
+    await world.fetch()
+    await world.openPresence()
+    world.holdUpdateWrites()
+    activeWorld = world
+
+    const { tree } = makeRenderer(world)
+    await act(async () => {
+      renderer = TestRenderer.create(tree(computedOutcome(world.current)))
+    })
+
+    await act(async () => {
+      addTagButton(renderer!.root).props.onClick()
+    })
+
+    // toggles 1 and 2 inside the held round trip submit [A] then [A,B]
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_A.text)!.props.onClick()
+      tagRowFor(renderer!.root, TAG_B.text)!.props.onClick()
+    })
+    await act(async () => flush())
+
+    // write 1 lands and its echo reaches the picker while write 2 is
+    // still out: props [A] is a list this picker submitted, not a peer
+    // change — pending [A,B] must survive it
+    await act(async () => {
+      world.releaseNextUpdate()
+      await flush()
+    })
+    await act(async () => {
+      renderer!.update(tree(computedOutcome(world.current)))
+    })
+    await act(async () => flush())
+
+    // the third toggle must still build on the pending [A,B]
+    await act(async () => {
+      tagRowFor(renderer!.root, TAG_C.text)!.props.onClick()
+    })
+    await act(async () => flush())
+
+    await act(async () => {
+      await world.settleWrites()
+      await flush()
+    })
+    const tagWrites = world.updateValues().filter((v) => 'tags' in v)
+    expect(tagWrites.length).toBe(3)
+    expect(sameSet(tagWrites[0].tags, [tagUrl(TAG_A.actionHash)])).toBe(true)
+    expect(
+      sameSet(tagWrites[1].tags, [
+        tagUrl(TAG_A.actionHash),
+        tagUrl(TAG_B.actionHash),
+      ])
+    ).toBe(true)
+    expect(
+      sameSet(tagWrites[2].tags, [
+        tagUrl(TAG_A.actionHash),
+        tagUrl(TAG_B.actionHash),
+        tagUrl(TAG_C.actionHash),
+      ])
+    ).toBe(true)
+    expect(
+      sameSet(world.current.tags, [
+        tagUrl(TAG_A.actionHash),
+        tagUrl(TAG_B.actionHash),
+        tagUrl(TAG_C.actionHash),
+      ])
+    ).toBe(true)
+  })
+
   it('a remove then re-add of the same tag submits the revert as dirty', async () => {
     const world = makeWorld(
       outcomeInstance({ tags: [tagUrl(TAG_A.actionHash)] })

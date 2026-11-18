@@ -335,25 +335,47 @@ const TagPicker: React.FC<TagPickerProps> = ({
      one — otherwise two clicks inside one round trip lose the first. The
      ref is the event-order authority (two callbacks inside one batched
      render cannot both read a state update); pendingList mirrors it so
-     optimistic checkmarks render. */
+     optimistic checkmarks render. submitted keeps every list sent but not
+     yet seen back as props, oldest first; pending is always its newest
+     entry. */
   const selectionRef = useRef<{
     lastProps: ActionHashB64[]
     pending: ActionHashB64[] | null
+    submitted: ActionHashB64[][]
   } | null>(null)
   if (selectionRef.current === null) {
-    selectionRef.current = { lastProps: [...selectedTags], pending: null }
+    selectionRef.current = {
+      lastProps: [...selectedTags],
+      pending: null,
+      submitted: [],
+    }
   }
   const selection = selectionRef.current
   const [pendingList, setPendingList] = useState<ActionHashB64[] | null>(null)
 
-  /* Reconcile the ref with the rendered props: pending lives only while
-     the props still show the pre-submission list. A prop list whose
-     contents moved is either the submission catching up or an
-     authoritative peer list — pending clears either way; an identical set
-     on a new array, or an unrelated rerender, retains it. */
+  /* Reconcile the ref with the rendered props. A prop list whose contents
+     moved is not necessarily a peer change: the picker's own writes echo
+     back the same way, one list at a time. If the arriving list is one of
+     the submitted ones, it is an echo — drop it and the older lists
+     (writes land in order), keeping pending unless the newest submission
+     itself just landed. A list matching nothing this picker sent is a
+     peer change and wins: pending and submitted both clear. An identical
+     set on a new array, or an unrelated rerender, retains pending. */
   const reconcileProps = (props: ActionHashB64[]) => {
     if (sameTagSet(props, selection.lastProps)) return
     selection.lastProps = [...props]
+    const echoed = selection.submitted.findIndex((list) =>
+      sameTagSet(list, props)
+    )
+    if (echoed >= 0) {
+      selection.submitted = selection.submitted.slice(echoed + 1)
+      if (!selection.submitted.length) {
+        selection.pending = null
+        setPendingList(null)
+      }
+      return
+    }
+    selection.submitted = []
     if (selection.pending !== null) {
       selection.pending = null
       setPendingList(null)
@@ -374,6 +396,7 @@ const TagPicker: React.FC<TagPickerProps> = ({
     // a no-op selection submits nothing
     if (sameTagSet(next, base)) return
     selection.pending = next
+    selection.submitted.push(next)
     setPendingList([...next])
     onChange([...next], [...base])
   }
